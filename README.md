@@ -113,4 +113,6 @@ Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动�
 
 也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
 
-[贡献指南](CONTRIBUTING.md) · [Apache-2.0 许可证](LICENSE)
+[验收复现](docs/validation.md) · [发行包](docs/release.md) · [变更记录](CHANGELOG.md)
+
+[贡献指南](CONTRIBUTING.md) · [安全反馈](SECURITY.md) · [第三方声明](THIRD_PARTY_NOTICES.md) · [Apache-2.0 许可证](LICENSE)

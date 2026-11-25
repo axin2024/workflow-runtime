@@ -1,0 +1,57 @@
+name: MySQL acceptance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_capacity:
+        description: Run the 1,000-workflow capacity test
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_RANDOM_ROOT_PASSWORD: '1'
+          MYSQL_DATABASE: workflow_test_ci
+          MYSQL_USER: workflow_test
+          MYSQL_PASSWORD: local-ci-only-password
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd="mysqladmin --protocol=tcp ping --silent"
+          --health-interval=5s
+          --health-timeout=4s
+          --health-retries=24
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Format and vet
+        run: |
+          test -z "$(gofmt -l cmd internal examples)"
+          go vet ./...
+          node --check internal/console/assets/console.js
+      - name: Exercise production transactions on MySQL
+        env:
+          MYSQL_TEST_PORT: ${{ job.services.mysql.ports[3306] }}
+          WORKFLOW_CAPACITY_LOAD: ${{ inputs.full_capacity && '1' || '0' }}
+        run: |
+          export WORKFLOW_TEST_MYSQL_DSN="workflow_test:local-ci-only-password@tcp(127.0.0.1:$MYSQL_TEST_PORT)/workflow_test_ci"
+          go test -count=1 -timeout 10m -v ./...
+      - name: Build the standalone CLI
+        run: go build -trimpath -o "$RUNNER_TEMP/workflow" ./cmd/workflow
