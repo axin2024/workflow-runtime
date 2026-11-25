@@ -56,6 +56,8 @@
             <div><dt>结算 (UTC)</dt><dd>{{optionalDate .FinishedAt}}</dd></div></dl>
           {{if .FailureMessage}}<p>{{deref .FailureMessage}}</p>{{end}}
           {{if .LogExcerpt}}<details><summary>日志片段</summary><pre>{{deref .LogExcerpt}}</pre><p class="digest mono">{{deref .LogSHA256}}</p></details>{{end}}
+          {{if .LogExpired}}<details><summary>日志已到期 · 待清理</summary><p class="digest mono">{{deref .LogSHA256}}</p></details>{{end}}
+          {{if .LogClearedAt}}<details><summary>日志正文已清理 · {{optionalDate .LogClearedAt}} UTC</summary><p class="digest mono">{{deref .LogSHA256}}</p></details>{{end}}
         </article>
         {{end}}
         {{if .Resolution}}<p>核对人 {{.Resolution.Actor}} · {{.Resolution.Evidence}} · {{date .Resolution.ResolvedAt}} UTC</p>{{end}}

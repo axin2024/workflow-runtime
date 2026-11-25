@@ -30,6 +30,7 @@
       <a href="/workflows"{{if eq .Section "workflows" "workflow" "schedules" "schedule"}} aria-current="page"{{end}}><span aria-hidden="true">◇</span>工作流</a>
       <a href="/backfills"{{if eq .Section "backfills" "backfill"}} aria-current="page"{{end}}><span aria-hidden="true">↺</span>历史补跑</a>
       <a href="/capacity"{{if eq .Section "capacity"}} aria-current="page"{{end}}><span aria-hidden="true">▤</span>执行配额</a>
+      {{if .Auth.CanOperate}}<a href="/retention"{{if eq .Section "retention"}} aria-current="page"{{end}}><span aria-hidden="true">◫</span>日志保留</a>{{end}}
       {{if .Auth.CanAuthor}}<a href="/editor"{{if eq .Section "editor"}} aria-current="page"{{end}}><span aria-hidden="true">＋</span>创建与导入</a>{{end}}
     </nav>
     <div class="identity"><strong>{{.Auth.Actor}}</strong><small>{{.Auth.Role}}</small>
@@ -49,6 +50,7 @@
     {{if eq .Section "backfills"}}{{template "backfills" .}}{{end}}
     {{if eq .Section "backfill"}}{{template "backfill" .}}{{end}}
     {{if eq .Section "capacity"}}{{template "capacity" .}}{{end}}
+    {{if eq .Section "retention"}}{{template "retention" .}}{{end}}
   </main>
 {{end}}
 </body>

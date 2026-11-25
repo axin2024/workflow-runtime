@@ -44,6 +44,7 @@ type page struct {
 	BackfillDraft   *backfillForm
 	Selected        []int
 	Capacity        *capacityPage
+	Retention       *store.LogRetentionReport
 }
 
 func (s server) workflows(w http.ResponseWriter, r *http.Request, auth session) {

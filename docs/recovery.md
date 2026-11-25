@@ -15,6 +15,8 @@ mysqldump --login-path=workflow-backup --single-transaction --quick --hex-blob -
 
 检查退出码，记录 SQL 文件的 SHA-256、字节数、源服务器版本、当前发行版和导出时间。Linux 可用 `sha256sum workflow-backup.sql`，PowerShell 可用 `Get-FileHash -Algorithm SHA256 -LiteralPath workflow-backup.sql`。导出文件中的数据包括工作流输入和任务日志片段，应与生产备份使用相同的保留策略。
 
+管理站清理后生成的备份包含清理记录和日志摘要。此前生成的备份仍可包含旧日志正文，由备份保存期限控制其访问和删除。
+
 ## 恢复到独立实例
 
 1. 准备与源环境同版的 MySQL 8.4 实例。由管理员创建空库 `workflow_recovery`，字符集使用 `utf8mb4`，排序规则使用 `utf8mb4_0900_bin`。目标账户应能在该库创建表、索引和约束，以及写入数据。恢复演练期间保持 Worker API、调度器、外部触发和真实副作用接入停止。

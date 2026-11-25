@@ -30,6 +30,8 @@ type AttemptResult struct {
 	ResultDigest   *string    `json:"result_digest,omitempty"`
 	LogExcerpt     *string    `json:"log_excerpt,omitempty"`
 	LogSHA256      *string    `json:"log_sha256,omitempty"`
+	LogClearedAt   *time.Time `json:"log_cleared_at,omitempty"`
+	LogExpired     bool       `json:"log_expired,omitempty"`
 	QueueWaitMS    int64      `json:"queue_wait_ms"`
 	ExecutionMS    *int64     `json:"execution_ms,omitempty"`
 }
@@ -81,10 +83,17 @@ func attachExecutionDetails(ctx context.Context, tx *sql.Tx, run Run, graph work
 			byKey[node.Key].DependencyWaitMS = &wait
 		}
 	}
-	attempts, err := tx.QueryContext(ctx, `SELECT a.node_key, a.ordinal, w.worker_key, p.pool_key, a.state, a.queued_at, a.started_at,
+	const logExpired = `a.log_excerpt IS NOT NULL AND COALESCE(r.finished_at <= p.cutoff AND a.finished_at <= p.cutoff
+		AND r.state IN ('succeeded', 'failed', 'canceled'), FALSE)`
+	attempts, err := tx.QueryContext(ctx, `SELECT a.node_key, a.ordinal, w.worker_key, pool.pool_key, a.state, a.queued_at, a.started_at,
 		a.lease_until, a.deadline_at, a.finished_at, a.failure_code, a.failure_message, LOWER(HEX(a.result_digest)),
-		a.log_excerpt, LOWER(HEX(a.log_digest))
-		FROM attempts a JOIN workers w ON w.id = a.worker_id LEFT JOIN execution_pools p ON p.id = a.pool_id
+		CASE WHEN `+logExpired+` THEN NULL ELSE a.log_excerpt END, LOWER(HEX(a.log_digest)), a.log_cleared_at, `+logExpired+`
+		FROM attempts a JOIN workers w ON w.id = a.worker_id JOIN runs r ON r.id = a.run_id
+		LEFT JOIN execution_pools pool ON pool.id = a.pool_id
+		LEFT JOIN (
+			SELECT workspace_id, TIMESTAMPADD(DAY, -CAST(days AS SIGNED), UTC_TIMESTAMP(6)) AS cutoff
+			FROM log_retention_policies WHERE days > 0
+		) p ON p.workspace_id = r.workspace_id
 		WHERE a.run_id = ? ORDER BY a.node_key, a.ordinal`, runID)
 	if err != nil {
 		return err
@@ -95,7 +104,7 @@ func attachExecutionDetails(ctx context.Context, tx *sql.Tx, run Run, graph work
 		var value AttemptResult
 		if err := attempts.Scan(&key, &value.Epoch, &value.Worker, &value.Pool, &value.State, &value.QueuedAt, &value.StartedAt, &value.LeaseUntil,
 			&value.Deadline, &value.FinishedAt, &value.FailureCode, &value.FailureMessage, &value.ResultDigest,
-			&value.LogExcerpt, &value.LogSHA256); err != nil {
+			&value.LogExcerpt, &value.LogSHA256, &value.LogClearedAt, &value.LogExpired); err != nil {
 			return err
 		}
 		value.QueueWaitMS = max(0, value.StartedAt.Sub(value.QueuedAt).Milliseconds())

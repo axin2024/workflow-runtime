@@ -624,6 +624,98 @@ try {
     }
     Write-Output 'Console schedule pause preserved its cursor. Backfill froze three of seven times and resumed as slots reopened. Console quota changes preserved the shared-pool assignment.'
 
+    $retentionGraph = Join-Path $fixture 'retention-workflow.json'
+    [IO.File]::WriteAllText($retentionGraph, @'
+{"key":"retention-workflow","nodes":[
+  {"key":"produce","task":"produce","queue":"retention","effect":"none","timeout_seconds":60,"retry":{"max_attempts":1}},
+  {"key":"finish","task":"finish","queue":"retention","effect":"none","timeout_seconds":60,"retry":{"max_attempts":1},
+   "depends_on":[{"node":"produce","when":"succeeded"}]}]}
+'@)
+    $retentionInputs = Join-Path $fixture 'retention-inputs.json'
+    [IO.File]::WriteAllText($retentionInputs, '{}')
+    & $binary publish demo 0 $retentionGraph | Out-Null
+    Assert-NativeExit 'publish log retention fixture'
+    $logWorker = & $binary worker-register demo retention-worker 1 retention:produce retention:finish | ConvertFrom-Json
+    Assert-NativeExit 'register log retention worker'
+    $logHeaders = @{ Authorization = "Bearer $($logWorker.token)" }
+    $logRuns = @{}
+    $logCompletions = @{}
+    $logText = 'retention fixture log body'
+    foreach ($name in @('expired-one', 'expired-two', 'fresh', 'unfinished')) {
+        $logRuns[$name] = (& $binary trigger demo retention-workflow $name $retentionInputs | ConvertFrom-Json).run.id
+        Assert-NativeExit 'trigger a log retention test run'
+        $tasks = if ($name -eq 'unfinished') { @('produce') } else { @('produce', 'finish') }
+        foreach ($taskName in $tasks) {
+            $leaseQuery = @{ tasks = @($taskName); lease_seconds = 30 } | ConvertTo-Json -Compress
+            $leased = (Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/claim" -Headers $logHeaders -ContentType 'application/json' -Body $leaseQuery).task
+            if ($leased.run_id -ne $logRuns[$name] -or $leased.node -ne $taskName) { throw 'Wrong log retention lease' }
+            $payload = @{
+                lease = @{ run_id = $leased.run_id; node = $leased.node; epoch = $leased.epoch; operation_key = $leased.operation_key }
+                success = $true
+            }
+            if ($taskName -eq 'produce') { $payload.log_excerpt = "$logText $name" }
+            $body = $payload | ConvertTo-Json -Depth 4 -Compress
+            if ($taskName -eq 'produce') { $logCompletions[$name] = $body }
+            $accepted = Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/complete" -Headers $logHeaders -ContentType 'application/json' -Body $body
+            if ($accepted.state -ne 'succeeded') { throw 'Log fixture completion failed' }
+        }
+    }
+    $oldAttempts = @($logRuns['expired-one'], $logRuns['expired-two'], $logRuns.unfinished) -join ','
+    $oldRuns = @($logRuns['expired-one'], $logRuns['expired-two']) -join ','
+    & $mysql @clientArgs "--database=$database" "--execute=UPDATE attempts SET finished_at=UTC_TIMESTAMP(6)-INTERVAL 2 DAY WHERE run_id IN ($oldAttempts); UPDATE retention_log_queue SET finished_at=UTC_TIMESTAMP(6)-INTERVAL 2 DAY WHERE run_id IN ($oldAttempts); UPDATE runs SET finished_at=UTC_TIMESTAMP(6)-INTERVAL 2 DAY WHERE id IN ($oldRuns);"
+    Assert-NativeExit 'age only the selected synthetic log attempts'
+    $retentionPage = Invoke-WebRequest -Uri "$consoleOrigin/retention" -WebSession $ops
+    $deniedRetention = Invoke-WebRequest -Uri "$consoleOrigin/retention/report.json" -WebSession $readOnly -SkipHttpErrorCheck
+    if ($retentionPage.Content -match 'action="/retention/cleanup"' -or $deniedRetention.StatusCode -ne 403) { throw 'Retention default or role boundary failed' }
+    $beforeClear = Invoke-RestMethod -Uri "$consoleOrigin/runs/$($logRuns['expired-one'])/report.json" -WebSession $ops
+    $savedPolicy = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/policy" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{ csrf = $csrf; generation = '0'; days = '1' }
+    $expiredReport = Invoke-RestMethod -Uri "$consoleOrigin/runs/$($logRuns['expired-one'])/report.json" -WebSession $ops
+    $expiredLog = ($expiredReport.detail.nodes | Where-Object key -eq produce).attempts[0]
+    if (!$expiredLog.log_expired -or $expiredLog.log_excerpt -or !$expiredLog.log_sha256 -or $expiredLog.log_cleared_at) {
+        throw 'Expired log was still readable before cleanup'
+    }
+    $cleanupKey = [regex]::Match($savedPolicy.Content, 'name="key" value="(cleanup-[a-z2-7]+)"').Groups[1].Value
+    $retentionForm = @{ csrf = $csrf; key = $cleanupKey; generation = '1'; limit = '1' }
+    $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/cleanup" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' -Body $retentionForm
+    $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/cleanup" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' -Body $retentionForm
+    $savedJobs = Invoke-RestMethod -Uri "$consoleOrigin/retention/report.json" -WebSession $ops
+    if ($savedJobs.format -ne 'workflow.log-retention.v1' -or $savedJobs.policy.generation -ne 1 -or $savedJobs.policy.days -ne 1 -or
+        $savedJobs.jobs.Count -ne 1 -or $savedJobs.jobs[0].cleared.Count -ne 1 -or !$savedJobs.jobs[0].has_more -or
+        $savedJobs.jobs[0].cleared[0].run_id -ne $logRuns['expired-one']) { throw 'Retention receipt or replay failed' }
+    $afterClear = Invoke-RestMethod -Uri "$consoleOrigin/runs/$($logRuns['expired-one'])/report.json" -WebSession $ops
+    $beforeLog = ($beforeClear.detail.nodes | Where-Object key -eq produce).attempts[0]
+    $afterLog = ($afterClear.detail.nodes | Where-Object key -eq produce).attempts[0]
+    $clearedView = Invoke-WebRequest -Uri "$consoleOrigin/runs/$($logRuns['expired-one'])" -WebSession $ops
+    $completionReplay = Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/complete" -Headers $logHeaders -ContentType 'application/json' -Body $logCompletions['expired-one']
+    if (!$beforeLog.log_excerpt -or $afterLog.log_excerpt -or !$afterLog.log_cleared_at -or $beforeLog.log_sha256 -ne $afterLog.log_sha256 -or
+        $afterLog.result_digest -ne $beforeLog.result_digest -or $clearedView.Content -notmatch '日志正文已清理' -or
+        $clearedView.Content -match $logText -or !$completionReplay.replayed) { throw 'Cleared log lost history or completion identity' }
+    $nextExpired = Invoke-RestMethod -Uri "$consoleOrigin/runs/$($logRuns['expired-two'])/report.json" -WebSession $ops
+    $nextLog = ($nextExpired.detail.nodes | Where-Object key -eq produce).attempts[0]
+    if (!$nextLog.log_expired -or $nextLog.log_cleared_at) { throw 'First batch should leave the second expired log pending' }
+    foreach ($name in @('fresh', 'unfinished')) {
+        $remainingLog = Invoke-RestMethod -Uri "$consoleOrigin/runs/$($logRuns[$name])/report.json" -WebSession $ops
+        if (($remainingLog.detail.nodes | Where-Object key -eq produce).attempts[0].log_excerpt -ne "$logText $name") {
+            throw "Cleanup removed a log outside this batch ($name)"
+        }
+    }
+    $nextPage = Invoke-WebRequest -Uri "$consoleOrigin/retention" -WebSession $ops
+    $retentionForm.key = [regex]::Match($nextPage.Content, 'name="key" value="(cleanup-[a-z2-7]+)"').Groups[1].Value
+    $retentionForm.limit = '128'
+    $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/cleanup" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' -Body $retentionForm
+    $lastBatch = (Invoke-RestMethod -Uri "$consoleOrigin/retention/report.json" -WebSession $ops).jobs[0]
+    if ($lastBatch.has_more -or $lastBatch.cleared.Count -ne 1 -or $lastBatch.cleared[0].run_id -ne $logRuns['expired-two']) {
+        throw 'Final cleanup did not isolate the remaining expired terminal log'
+    }
+    $disabled = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/policy" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{ csrf = $csrf; generation = '1'; days = '0' }
+    $retentionForm.key = 'cleanup-bbbbbbbbbbbbbbbbbbbbbbbbbb'
+    $staleCleanup = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/retention/cleanup" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' `
+        -Body $retentionForm -SkipHttpErrorCheck
+    if ($disabled.Content -match 'action="/retention/cleanup"' -or $staleCleanup.StatusCode -ne 409) { throw 'Stale retention generation was accepted' }
+    Write-Output 'Console retention cleared two expired logs in separate batches, preserved digests and completion replay, and left fresh and unfinished logs intact.'
+
     & $binary console-revoke demo console-operator | Out-Null
     Assert-NativeExit 'revoke the console operator'
     $closed = Invoke-WebRequest -Uri "$consoleOrigin/runs/$browserChildID" -WebSession $ops

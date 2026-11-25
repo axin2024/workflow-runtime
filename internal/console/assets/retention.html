@@ -1,0 +1,44 @@
+{{define "retention"}}
+  {{$report := .Retention}}
+  {{$policy := $report.Policy}}
+  <header class="page-head">
+    <div><h1>日志保留</h1><p>{{.Auth.Workspace}} · 管理已结束运行的日志正文。</p></div>
+    <a class="button secondary" href="/retention/report.json{{if $report.Before}}?before={{$report.Before}}{{end}}">导出策略与本页清理记录</a>
+  </header>
+  <section class="panel padded">
+    <h2>保留策略</h2>
+    <dl class="inline-metadata">
+      <div><dt>配置版本</dt><dd>{{$policy.Generation}}</dd></div>
+      <div><dt>更新人</dt><dd>{{if $policy.UpdatedBy}}{{$policy.UpdatedBy}}{{else}}—{{end}}</dd></div>
+      <div><dt>更新时间 (UTC)</dt><dd>{{optionalDate $policy.UpdatedAt}}</dd></div>
+    </dl>
+    <form class="inline" method="post" action="/retention/policy">
+      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <input type="hidden" name="generation" value="{{$policy.Generation}}">
+      <label>保留天数（0 为关闭）<input type="number" name="days" min="0" max="3650" value="{{$policy.Days}}" required></label>
+      <button class="primary" type="submit">保存策略</button>
+    </form>
+  </section>
+  {{if .RequestKey}}<section class="panel padded">
+    <h2>清理过期日志正文</h2>
+    <p>运行和尝试都达到保留期限后，才能清理日志正文。运行详情保留时间线、输出和日志摘要。</p>
+    <form class="inline" method="post" action="/retention/cleanup">
+      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <input type="hidden" name="generation" value="{{$policy.Generation}}">
+      <input type="hidden" name="key" value="{{.RequestKey}}">
+      <label>本次最多清理<input type="number" name="limit" min="1" max="128" value="32" required></label>
+      <button class="secondary" type="submit">执行一批清理</button>
+    </form>
+  </section>{{end}}
+  <section class="panel padded">
+    <h2>清理作业</h2>
+    {{range $report.Jobs}}
+    <details id="cleanup-{{.ID}}">
+      <summary>#{{.ID}} · {{date .CommittedAt}} UTC · {{.Actor}} · 已清理 {{len .Cleared}} 条{{if .HasMore}} · 仍有过期日志{{end}}</summary>
+      <p>策略版本 {{.Generation}} · 截止时间 {{date .Cutoff}} UTC</p>
+      {{if .Cleared}}<ul>{{range .Cleared}}<li><a href="/runs/{{.RunID}}">运行 #{{.RunID}}</a> · {{.Node}} · 尝试 #{{.Epoch}}</li>{{end}}</ul>{{end}}
+    </details>
+    {{else}}<p>暂无清理作业。</p>{{end}}
+    {{template "pager" .}}
+  </section>
+{{end}}

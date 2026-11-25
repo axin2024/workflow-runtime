@@ -84,6 +84,10 @@ func Handler(db *store.Store, logger *log.Logger, secureCookie bool) (http.Handl
 	mux.HandleFunc("POST /backfills/{id}/{action}", s.protect(s.backfillAction))
 	mux.HandleFunc("GET /capacity", s.protect(s.capacity))
 	mux.HandleFunc("POST /capacity/{resource}", s.protect(s.saveCapacity))
+	mux.HandleFunc("GET /retention", s.protect(s.retention))
+	mux.HandleFunc("GET /retention/report.json", s.protect(s.retentionExport))
+	mux.HandleFunc("POST /retention/policy", s.protect(s.retentionPolicy))
+	mux.HandleFunc("POST /retention/cleanup", s.protect(s.retentionCleanup))
 	protected := http.NewCrossOriginProtection().Handler(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")

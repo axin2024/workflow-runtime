@@ -148,6 +148,12 @@ func (s *Store) Complete(ctx context.Context, token string, request CompletionRe
 		run.ID, node.Key, request.Lease.Epoch); err != nil {
 		return CompletionReceipt{}, fmt.Errorf("write attempt result: %w", err)
 	}
+	if logDigest != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO retention_log_queue (workspace_id, run_id, node_key, ordinal, finished_at)
+			VALUES (?, ?, ?, ?, ?)`, worker.workspace, run.ID, node.Key, request.Lease.Epoch, now); err != nil {
+			return CompletionReceipt{}, fmt.Errorf("index attempt log: %w", err)
+		}
+	}
 	if err := applyNodeChange(ctx, tx, run.ID, node.Key, change, now); err != nil {
 		return CompletionReceipt{}, err
 	}
