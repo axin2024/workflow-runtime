@@ -34,6 +34,22 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		scope.Workspace = args[1]
 	}
 	switch args[0] {
+	case "console-grant":
+		if len(args) != 4 {
+			return errors.New("usage: workflow console-grant WORKSPACE ACTOR author|operator|viewer")
+		}
+		scope.Actor = args[2]
+		operation = func(db *store.Store) (any, error) {
+			return db.GrantConsole(ctx, scope, store.ConsoleRole(args[3]))
+		}
+	case "console-revoke":
+		if len(args) != 3 {
+			return errors.New("usage: workflow console-revoke WORKSPACE ACTOR")
+		}
+		scope.Actor = args[2]
+		operation = func(db *store.Store) (any, error) {
+			return map[string]string{"workspace": scope.Workspace, "actor": scope.Actor}, db.RevokeConsole(ctx, scope)
+		}
 	case "workspace-create":
 		if len(args) != 2 {
 			return errors.New("usage: workflow workspace-create WORKSPACE")

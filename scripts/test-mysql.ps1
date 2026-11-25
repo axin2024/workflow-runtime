@@ -15,6 +15,7 @@ $rootPassword = [guid]::NewGuid().ToString('N')
 $appPassword = [guid]::NewGuid().ToString('N')
 $server = $null
 $workerAPI = $null
+$console = $null
 $scanners = @()
 $passed = $false
 
@@ -30,6 +31,12 @@ function Get-LoopbackPort {
     } finally {
         $listener.Stop()
     }
+}
+
+function Get-ConsoleCsrf([string]$Html) {
+    $match = [regex]::Match($Html, 'name="csrf" value="([a-zA-Z0-9_-]{43})"')
+    if (!$match.Success) { throw 'Console form is missing its session proof' }
+    return $match.Groups[1].Value
 }
 $port = Get-LoopbackPort
 
@@ -234,6 +241,87 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     }
     Write-Output 'CLI previewed, registered, replayed, and exported a partial rerun with separate source and derived reports.'
 
+    $operator = & $binary console-grant demo console-operator operator | ConvertFrom-Json
+    Assert-NativeExit 'create a console operator'
+    $author = & $binary console-grant demo console-author author | ConvertFrom-Json
+    Assert-NativeExit 'create a console author'
+    & $binary workspace-create isolated | Out-Null
+    Assert-NativeExit 'create a separate console workspace'
+    $viewer = & $binary console-grant isolated console-viewer viewer | ConvertFrom-Json
+    Assert-NativeExit 'create a console viewer in the separate workspace'
+    $consolePort = Get-LoopbackPort
+    $consoleOrigin = "http://127.0.0.1:$consolePort"
+    $console = Start-Process -FilePath $binary -ArgumentList @('console', '--listen', "127.0.0.1:$consolePort") -WindowStyle Hidden -PassThru `
+        -RedirectStandardError (Join-Path $fixture 'console.log')
+    $healthy = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        if ($console.HasExited) { throw 'Console exited before accepting connections' }
+        try {
+            $health = Invoke-WebRequest -Uri "$consoleOrigin/healthz" -TimeoutSec 1
+            if ($health.StatusCode -eq 204) { $healthy = $true; break }
+        } catch {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (!$healthy) { throw 'Console failed its health check' }
+    $publicView = Invoke-WebRequest -Uri "$consoleOrigin/"
+    if ($publicView.Content -notmatch 'name="credential"') { throw 'Console did not require authentication' }
+    $operatorView = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/login" -SessionVariable ops `
+        -Body @{credential = $operator.token} -ContentType 'application/x-www-form-urlencoded'
+    if ($operatorView.Content -notmatch 'console-operator' -or $operatorView.Content -notmatch 'dispatch-report') { throw 'Console did not show the operator workspace' }
+    $csrf = Get-ConsoleCsrf $operatorView.Content
+    $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/login" -SessionVariable readOnly `
+        -Body @{credential = $viewer.token} -ContentType 'application/x-www-form-urlencoded'
+    $foreignReport = Invoke-WebRequest -Uri "$consoleOrigin/runs/$($rerun.run_id)/report.json" -WebSession $readOnly -SkipHttpErrorCheck
+    if ($foreignReport.StatusCode -ne 404) { throw 'A viewer read another workspace report' }
+    $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/login" -SessionVariable writer `
+        -Body @{credential = $author.token} -ContentType 'application/x-www-form-urlencoded'
+    $authorCsrf = Get-ConsoleCsrf $unused.Content
+    $draft = (Get-Content -Raw -LiteralPath (Join-Path $project 'examples/diamond.json')).Replace('"dispatch-report"', '"console-dispatch"')
+    $validated = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/editor" -WebSession $writer `
+        -Body @{csrf = $authorCsrf; revision = '0'; source = $draft; command = 'validate'} -ContentType 'application/x-www-form-urlencoded'
+    if ($validated.Content -notmatch '<svg class="dag"' -or $validated.Content -notmatch 'class="graph-node') { throw 'Author did not get the validated graph' }
+    $forbidden = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/editor" -WebSession $writer -SkipHttpErrorCheck `
+        -Body @{csrf = $authorCsrf; revision = '0'; source = $draft; command = 'publish'} -ContentType 'application/x-www-form-urlencoded'
+    $untrusted = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/editor" -WebSession $ops -SkipHttpErrorCheck `
+        -Body @{revision = '0'; source = $draft; command = 'publish'} -ContentType 'application/x-www-form-urlencoded'
+    if ($forbidden.StatusCode -ne 403 -or $untrusted.StatusCode -ne 403) { throw 'Console accepted a forbidden publication' }
+    $published = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/editor" -WebSession $ops `
+        -Body @{csrf = $csrf; revision = '0'; source = $draft; command = 'publish'} -ContentType 'application/x-www-form-urlencoded'
+    if ($published.Content -notmatch '<h1>console-dispatch</h1>' -or $published.Content -notmatch 'name="logical_at"') {
+        throw 'Console publication did not open the workflow page'
+    }
+    $changedDraft = $draft.Replace('"timeout_seconds": 30', '"timeout_seconds": 35')
+    $conflict = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/editor" -WebSession $ops -SkipHttpErrorCheck `
+        -Body @{csrf = $csrf; revision = '0'; source = $changedDraft; command = 'publish'} -ContentType 'application/x-www-form-urlencoded'
+    if ($conflict.StatusCode -ne 409 -or $conflict.Content -notmatch 'extract') { throw 'Console publication failed to show a stale revision' }
+    $registered = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/workflows/console-dispatch/trigger" -WebSession $ops `
+        -Body @{csrf = $csrf; revision = '1'; key = 'console-demo'; kind = 'manual'; inputs = '{"rows":12,"source":"console"}'} `
+        -ContentType 'application/x-www-form-urlencoded'
+    $registeredID = [regex]::Match($registered.Content, '/runs/(\d+)/report\.json').Groups[1].Value
+    if (!$registeredID -or $registered.Content -notmatch 'id="node-extract"') { throw 'Console trigger did not open the registered run' }
+    $filtered = Invoke-WebRequest -Uri "$consoleOrigin/?state=queued&dag=console-dispatch" -WebSession $ops
+    if ($filtered.Content -notmatch "/runs/$registeredID" -or $filtered.Content -match 'dispatch-rerun-demo') { throw 'Console run filtering returned an unexpected run' }
+    $canceled = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/runs/$registeredID/cancel" -WebSession $ops `
+        -Body @{csrf = $csrf; key = 'console-stop'; grace = '0'; reason = 'test-stop'} -ContentType 'application/x-www-form-urlencoded'
+    if ($canceled.Content -notmatch 'test-stop') { throw 'Console did not read back the cancellation' }
+    $browserPreview = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/runs/$($failedRun.run.id)/rerun-preview" -WebSession $ops `
+        -Body @{csrf = $csrf; key = 'console-rerun'; nodes = 'extract'} -ContentType 'application/x-www-form-urlencoded'
+    if ($browserPreview.Content -notmatch 'name="key" value="console-rerun"' -or $browserPreview.Content -notmatch 'name="nodes" value="extract"') { throw 'Console rerun preview omitted the selected node' }
+    $browserRerun = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/runs/$($failedRun.run.id)/rerun" -WebSession $ops `
+        -Body @{csrf = $csrf; key = 'console-rerun'; nodes = 'extract'} -ContentType 'application/x-www-form-urlencoded'
+    $browserChildID = [regex]::Match($browserRerun.Content, '/runs/(\d+)/compare').Groups[1].Value
+    if (!$browserChildID -or $browserChildID -eq [string]$rerun.run_id) { throw 'Console did not create a separate child run' }
+    $comparison = Invoke-WebRequest -Uri "$consoleOrigin/runs/$browserChildID/compare" -WebSession $ops
+    $browserReport = Invoke-RestMethod -Uri "$consoleOrigin/runs/$browserChildID/report.json" -WebSession $ops
+    if ($comparison.Content -notmatch "/runs/$($failedRun.run.id)/report.json" -or $browserReport.detail.rerun.actor -ne 'console-operator' -or
+        $browserReport.detail.rerun.plan.parent_run_id -ne $failedRun.run.id) { throw 'Console reports lost source or actor information' }
+    & $binary console-revoke demo console-operator | Out-Null
+    Assert-NativeExit 'revoke the console operator'
+    $closed = Invoke-WebRequest -Uri "$consoleOrigin/runs/$browserChildID" -WebSession $ops
+    if ($closed.Content -notmatch 'name="credential"') { throw 'Revocation left behind an active console session' }
+    Write-Output 'Console authentication, workspace isolation, author permission, DAG publication and conflict, trigger, cancel, rerun and report all passed over HTTP.'
+
     $externalGraph = Join-Path $fixture 'external-action.json'
     [IO.File]::WriteAllText($externalGraph, @'
 {"key":"external-action","nodes":[
@@ -359,6 +447,10 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     $passed = $true
 } finally {
     try {
+        if ($console -and !$console.HasExited) {
+            Stop-Process -Id $console.Id
+            if (!$console.WaitForExit(5000)) { throw 'Fixture console failed to stop' }
+        }
         if ($workerAPI -and !$workerAPI.HasExited) {
             Stop-Process -Id $workerAPI.Id
             if (!$workerAPI.WaitForExit(5000)) { throw 'Fixture Worker API failed to stop' }

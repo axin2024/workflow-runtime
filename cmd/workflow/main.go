@@ -29,7 +29,7 @@ func main() {
 }
 
 func longRunningCommand(name string) bool {
-	return name == "scheduler" || name == "worker-api" || name == "worker"
+	return name == "scheduler" || name == "worker-api" || name == "worker" || name == "console"
 }
 
 const usage = `Usage:
@@ -60,6 +60,9 @@ const usage = `Usage:
   workflow workspace-quota-get WORKSPACE
   workflow queue-quota-put WORKSPACE QUEUE EXPECTED_GENERATION SLOTS|unlimited [POOL]
   workflow queue-quota-get WORKSPACE QUEUE
+  workflow console-grant WORKSPACE ACTOR author|operator|viewer
+  workflow console-revoke WORKSPACE ACTOR
+  workflow console [--listen 127.0.0.1:8081] [--secure-cookie]
   workflow worker-api [--listen 127.0.0.1:8080]
   workflow worker [--once] [--endpoint URL] [--interval DURATION] [--lease-seconds N]`
 
@@ -73,6 +76,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runWorker(ctx, args[1:], out, os.Stderr)
 	case "worker-api":
 		return runWorkerAPI(ctx, args[1:])
+	case "console":
+		return runConsole(ctx, args[1:])
 	case "validate":
 	default:
 		return runDatabaseCommand(ctx, args, out)

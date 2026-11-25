@@ -1,0 +1,111 @@
+{{define "runs"}}
+  <header class="page-head"><div><h1>运行记录</h1><p>跟踪工作流执行、排队与失败处置。</p></div><a class="button secondary" href="/workflows">查看工作流</a></header>
+  <form method="get" action="/" class="panel padded filters" aria-label="运行筛选">
+    <label>工作流键<input name="dag" placeholder="dispatch-report" value="{{.Filters.Get "dag"}}"></label>
+    <label>状态<select name="state"><option value="">全部状态</option>{{range .States}}<option value="{{.}}"{{if eq . ($.Filters.Get "state")}} selected{{end}}>{{status .}}</option>{{end}}</select></label>
+    <label>开始时间 (UTC)<input type="datetime-local" name="from" value="{{.Filters.Get "from"}}"></label>
+    <label>结束时间 (UTC)<input type="datetime-local" name="through" value="{{.Filters.Get "through"}}"></label>
+    <button class="primary" type="submit">筛选</button><a href="/" class="clear">清除</a>
+  </form>
+  <section class="panel table-wrap" aria-label="运行列表">
+    {{if .Runs}}
+    <table><thead><tr><th>运行</th><th>工作流</th><th>版本</th><th>状态</th><th>登记时间 (UTC)</th><th>总耗时</th></tr></thead>
+      <tbody>{{range .Runs}}<tr><td><a class="mono" href="/runs/{{.ID}}">#{{.ID}}</a><span class="subcell">{{.Kind}}</span></td>
+      <td><a href="/workflows/{{.DAG}}?revision={{.Revision}}">{{.DAG}}</a></td><td>v{{.Revision}}</td>
+      <td><span class="status {{.State}}">{{status .State}}</span></td><td>{{date .CreatedAt}}</td><td>{{elapsed .CreatedAt .FinishedAt}}</td></tr>{{end}}</tbody>
+    </table>
+    {{else}}<div class="empty"><strong>没有符合条件的运行</strong><p>调整筛选条件，或从已发布的工作流触发首次运行。</p><a href="/workflows">查看工作流 →</a></div>{{end}}
+  </section>
+  {{template "pager" .}}
+{{end}}
+
+{{define "run"}}
+  {{$detail := .Detail}}{{$run := $detail.Run}}
+  <a class="back" href="/">← 运行记录</a>
+  <header class="page-head"><div><h1>{{.Title}} <span class="status {{$run.State}}">{{status $run.State}}</span></h1>
+    <p><a href="/workflows/{{$run.DAG}}?revision={{$run.Revision}}">{{$run.DAG}} · v{{$run.Revision}}</a><span class="separator">·</span>{{$run.Kind}}</p></div>
+    <div class="actions">{{if $detail.Rerun}}<a class="button secondary" href="/runs/{{$run.ID}}/compare">父子运行对照</a>{{end}}
+      <a class="button secondary" href="/runs/{{$run.ID}}/report.json">导出报告</a><a class="button secondary" href="/runs/{{$run.ID}}">刷新</a></div>
+  </header>
+  <dl class="panel run-summary"><div><dt>登记时间 (UTC)</dt><dd>{{date $run.CreatedAt}}</dd></div>
+    <div><dt>业务时间 (UTC)</dt><dd>{{date $run.LogicalAt}}</dd></div><div><dt>总耗时</dt><dd>{{elapsed $run.CreatedAt $run.FinishedAt}}</dd></div>
+    <div><dt>触发键</dt><dd class="mono">{{$run.TriggerKey}}</dd></div></dl>
+  <section class="panel"><div class="panel-head"><h2>DAG 执行状态</h2><span class="subtle">{{len $detail.Nodes}} 个节点</span></div>{{template "graph" .}}</section>
+  {{if $detail.Rerun}}<section class="panel padded"><h2>来源运行</h2><p><a href="/runs/{{$detail.Rerun.Plan.ParentRunID}}">#{{$detail.Rerun.Plan.ParentRunID}}</a> · {{$detail.Rerun.Actor}} · {{date $detail.Rerun.CreatedAt}} UTC</p></section>{{end}}
+  {{if $detail.RecentReruns}}<section class="panel padded"><h2>最近的子运行</h2><ul class="link-list">{{range $detail.RecentReruns}}<li><a href="/runs/{{.RunID}}">#{{.RunID}}</a><span class="status {{.State}}">{{status .State}}</span> <a href="/runs/{{.RunID}}/compare">对照</a></li>{{end}}</ul></section>{{end}}
+  {{if $detail.Cancellation}}<section class="panel padded"><h2>取消记录</h2><p>{{$detail.Cancellation.Actor}} · {{date $detail.Cancellation.RequestedAt}} UTC</p><p>{{$detail.Cancellation.Reason}}</p></section>{{end}}
+  {{if .Plan}}{{template "rerun-plan" .}}{{end}}
+  <section class="panel node-list">
+    <div class="panel-head"><h2>节点与尝试</h2><span class="subtle">展开查看输入来源、等待时间与日志</span></div>
+    {{range $detail.Nodes}}<details class="node-detail" id="node-{{.Key}}"{{if or (eq .State "failed") (eq .State "action_required")}} open{{end}}>
+      <summary><span class="mono">{{.Key}}</span><span class="subtle">{{.Queue}}</span><span class="status {{.State}}">{{status .State}}</span><span>{{len .Attempts}} 次尝试</span></summary>
+      <div class="node-content">
+        <dl class="inline-metadata"><div><dt>依赖等待</dt><dd>{{duration .DependencyWaitMS}}</dd></div>
+          <div><dt>业务操作号</dt><dd class="mono">{{.OperationKey}}</dd></div>
+          {{if .FailureCode}}<div><dt>失败代码</dt><dd class="mono">{{deref .FailureCode}}</dd></div>{{end}}</dl>
+        {{if .Dependencies}}<div class="table-wrap"><table class="nested"><thead><tr><th>前置节点</th><th>条件</th><th>判定</th><th>时间 (UTC)</th></tr></thead>
+          <tbody>{{range .Dependencies}}<tr><td>{{.Node}}</td><td>{{.When}}{{if .Branch}} / {{.Branch}}{{end}}</td><td>{{.Reason}}</td><td>{{optionalDate .DecidedAt}}</td></tr>{{end}}</tbody></table></div>{{end}}
+        {{if .Artifact}}<p class="artifact">产物来自 <a href="/runs/{{.Artifact.RunID}}#node-{{.Artifact.Node}}">#{{.Artifact.RunID}} / {{.Artifact.Node}}</a> · 尝试 {{.Artifact.Epoch}}</p><p class="digest mono">{{.Artifact.SHA256}}</p>{{end}}
+        {{if .Outputs}}<details><summary>查看输出</summary><pre>{{json .Outputs}}</pre></details>{{end}}
+        {{range .Attempts}}
+        <article class="attempt">
+          <div class="split"><h3>尝试 {{.Epoch}}</h3><span class="status {{.State}}">{{status .State}}</span></div>
+          <dl class="inline-metadata"><div><dt>Worker</dt><dd>{{.Worker}}{{if .Pool}} / {{deref .Pool}}{{end}}</dd></div>
+            <div><dt>排队耗时</dt><dd>{{.QueueWaitMS}} ms</dd></div><div><dt>执行耗时</dt><dd>{{duration .ExecutionMS}}</dd></div>
+            <div><dt>领取 (UTC)</dt><dd>{{date .StartedAt}}</dd></div><div><dt>租约截止 (UTC)</dt><dd>{{date .LeaseUntil}}</dd></div>
+            <div><dt>结算 (UTC)</dt><dd>{{optionalDate .FinishedAt}}</dd></div></dl>
+          {{if .FailureMessage}}<p>{{deref .FailureMessage}}</p>{{end}}
+          {{if .LogExcerpt}}<details><summary>日志片段</summary><pre>{{deref .LogExcerpt}}</pre><p class="digest mono">{{deref .LogSHA256}}</p></details>{{end}}
+        </article>
+        {{end}}
+        {{if .Resolution}}<p>核对人 {{.Resolution.Actor}} · {{.Resolution.Evidence}} · {{date .Resolution.ResolvedAt}} UTC</p>{{end}}
+        {{if and $.Auth.CanOperate (eq .State "action_required")}}<details><summary>核对外部动作</summary>
+          <form class="form-stack compact" method="post" action="/runs/{{$run.ID}}/resolve">
+            <input type="hidden" name="csrf" value="{{$.Auth.CSRF}}"><input type="hidden" name="node" value="{{.Key}}"><input type="hidden" name="epoch" value="{{.LeaseEpoch}}">
+            <div class="fields"><label>请求键<input name="key" maxlength="128" required></label><label>结论<select name="state"><option value="succeeded">已成功</option><option value="failed">已失败</option></select></label>
+            <label>分支（可选）<input name="branch"></label></div><label>证据<textarea name="evidence" required rows="2"></textarea></label>
+            <label>成功输出（可选）<textarea name="outputs" rows="2" spellcheck="false"></textarea></label><div><button class="secondary" type="submit">登记核对</button></div>
+          </form></details>{{end}}
+      </div>
+    </details>{{end}}
+  </section>
+  {{if .FailedNodes}}<section class="panel padded"><h2>部分重跑</h2>
+    <form class="form-stack" method="post" action="/runs/{{$run.ID}}/rerun-preview"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <div class="checks">{{range .FailedNodes}}<label><input type="checkbox" name="nodes" value="{{.}}"> {{.}}</label>{{end}}</div>
+      <label>请求键<input name="key" maxlength="128" value="{{.RequestKey}}" required></label><div><button class="secondary" type="submit">预览受影响节点</button></div>
+    </form></section>{{end}}
+  {{if .CanCancel}}<section class="panel padded"><h2>取消运行</h2>
+    <form class="form-stack" method="post" action="/runs/{{$run.ID}}/cancel"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <div class="fields"><label>请求键<input name="key" maxlength="128" required></label><label>宽限秒数<input type="number" name="grace" min="0" max="120" value="15" required></label></div>
+      <label>取消原因<textarea name="reason" required rows="2"></textarea></label><div><button class="danger" type="submit">提交取消请求</button></div>
+    </form></section>{{end}}
+  <section class="panel padded"><h2>运行输入与审计</h2><p class="digest mono">{{$detail.InputDigest}}</p>
+    <details><summary>查看原始输入</summary><pre>{{json $run.Inputs}}</pre></details>
+    {{if $detail.Audit}}<div class="table-wrap"><table class="nested"><thead><tr><th>事件</th><th>操作者</th><th>时间 (UTC)</th><th>详情</th></tr></thead>
+    <tbody>{{range $detail.Audit}}<tr><td>{{.Kind}}</td><td>{{.Actor}}</td><td>{{date .CreatedAt}}</td><td><details><summary>展开</summary><pre>{{json .Details}}</pre></details></td></tr>{{end}}</tbody></table></div>{{end}}
+  </section>
+{{end}}
+
+{{define "rerun-plan"}}
+  <section class="panel padded"><h2>重跑预览</h2><p>沿用版本 {{.Plan.Revision}} 和源运行输入。</p><p class="digest mono">{{.Plan.InputDigest}}</p>
+    <div class="table-wrap"><table class="nested"><thead><tr><th>节点</th><th>动作</th><th>初始状态</th><th>来源</th></tr></thead>
+      <tbody>{{range .Plan.Nodes}}<tr><td>{{.Key}}</td><td>{{if eq .Action "reuse"}}沿用{{else}}重新判断并执行{{end}}</td><td>{{status (printf "%s" .State)}}</td>
+        <td>{{if .SourceRun}}<a href="/runs/{{.SourceRun}}#node-{{.Key}}">#{{.SourceRun}}</a>{{end}}{{if .Artifact}} <span class="mono">{{short .Artifact.SHA256}}</span>{{end}}</td></tr>{{end}}</tbody></table></div>
+    <form method="post" action="/runs/{{.Plan.ParentRunID}}/rerun"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><input type="hidden" name="key" value="{{.RequestKey}}">
+      {{range .Plan.Selected}}<input type="hidden" name="nodes" value="{{.}}">{{end}}<button type="submit" class="primary">创建子运行</button></form>
+  </section>
+{{end}}
+
+{{define "compare"}}
+  {{$parent := .Compare}}{{$child := .Detail}}
+  <a class="back" href="/runs/{{$child.Run.ID}}">← 运行 #{{$child.Run.ID}}</a>
+  <header class="page-head"><div><h1>父子运行对照</h1><p>{{$child.Run.DAG}} · v{{$child.Run.Revision}}</p></div></header>
+  <div class="compare-grid">
+    <section class="panel padded"><h2>源运行 <a href="/runs/{{$parent.Run.ID}}">#{{$parent.Run.ID}}</a></h2><p><span class="status {{$parent.Run.State}}">{{status $parent.Run.State}}</span></p><p class="digest mono">{{$parent.InputDigest}}</p><a href="/runs/{{$parent.Run.ID}}/report.json">导出源运行</a></section>
+    <section class="panel padded"><h2>子运行 <a href="/runs/{{$child.Run.ID}}">#{{$child.Run.ID}}</a></h2><p><span class="status {{$child.Run.State}}">{{status $child.Run.State}}</span></p><p class="digest mono">{{$child.InputDigest}}</p><a href="/runs/{{$child.Run.ID}}/report.json">导出子运行</a></section>
+  </div>
+  <section class="panel table-wrap"><table><thead><tr><th>节点</th><th>源运行</th><th>子运行</th><th>子运行产物来源</th></tr></thead>
+    <tbody>{{range .Comparison}}<tr><td class="mono">{{.Child.Key}}</td><td><span class="status {{.Parent.State}}">{{status .Parent.State}}</span> · {{len .Parent.Attempts}} 次尝试</td>
+      <td><span class="status {{.Child.State}}">{{status .Child.State}}</span> · {{len .Child.Attempts}} 次尝试</td>
+      <td>{{if .Child.Artifact}}<a href="/runs/{{.Child.Artifact.RunID}}#node-{{.Child.Key}}">#{{.Child.Artifact.RunID}}</a>{{else}}—{{end}}</td></tr>{{end}}</tbody></table></section>
+{{end}}

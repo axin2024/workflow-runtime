@@ -1,0 +1,73 @@
+{{define "layout"}}<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · Workflow Runtime</title>
+  <link rel="stylesheet" href="/assets/console.css">
+  <script src="/assets/console.js" defer></script>
+</head>
+{{if eq .Section "login"}}
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">W</span><span>Workflow Runtime</span></div>
+    <h1>登录管理站</h1>
+    <p>使用管理员签发的工作空间凭据登录。</p>
+    {{template "alerts" .}}
+    <form method="post" action="/login" class="form-stack">
+      <label>登录凭据<input type="password" name="credential" required autocomplete="current-password" autofocus></label>
+      <button class="primary" type="submit">登录</button>
+    </form>
+  </main>
+{{else}}
+<body class="app">
+  <a class="skip" href="#content">跳到内容</a>
+  <aside class="sidebar">
+    <a href="/" class="brand"><span class="brand-mark" aria-hidden="true">W</span><span>Workflow<br>Runtime</span></a>
+    <div class="workspace"><span>工作空间</span><strong>{{.Auth.Workspace}}</strong></div>
+    <nav aria-label="主导航">
+      <a href="/"{{if or (eq .Section "runs") (eq .Section "run") (eq .Section "compare")}} aria-current="page"{{end}}><span aria-hidden="true">◷</span>运行记录</a>
+      <a href="/workflows"{{if eq .Section "workflows" "workflow"}} aria-current="page"{{end}}><span aria-hidden="true">◇</span>工作流</a>
+      {{if .Auth.CanAuthor}}<a href="/editor"{{if eq .Section "editor"}} aria-current="page"{{end}}><span aria-hidden="true">＋</span>创建与导入</a>{{end}}
+    </nav>
+    <div class="identity"><strong>{{.Auth.Actor}}</strong><small>{{.Auth.Role}}</small>
+      <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><button class="quiet" type="submit">退出登录</button></form>
+    </div>
+  </aside>
+  <main id="content" class="content">
+    {{template "alerts" .}}
+    {{if eq .Section "runs"}}{{template "runs" .}}{{end}}
+    {{if eq .Section "run"}}{{template "run" .}}{{end}}
+    {{if eq .Section "compare"}}{{template "compare" .}}{{end}}
+    {{if eq .Section "workflows"}}{{template "workflows" .}}{{end}}
+    {{if eq .Section "workflow"}}{{template "workflow" .}}{{end}}
+    {{if eq .Section "editor"}}{{template "editor" .}}{{end}}
+  </main>
+{{end}}
+</body>
+</html>{{end}}
+
+{{define "alerts"}}
+  {{if .Problem}}<div class="alert error" role="alert">{{.Problem}}</div>{{end}}
+  {{if .Notice}}<div class="alert notice" role="status">{{.Notice}}</div>{{end}}
+{{end}}
+
+{{define "graph"}}
+  <div class="graph-scroll" tabindex="0" aria-label="工作流依赖图">
+    <svg class="dag" width="{{.Diagram.Width}}" height="{{.Diagram.Height}}" role="img" aria-label="工作流有向无环图">
+      <defs><marker id="arrow" viewBox="0 0 9 9" refX="8" refY="4.5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L9 4.5 L0 9 Z" fill="context-stroke"/></marker></defs>
+      {{range .Diagram.Edges}}<path class="edge {{.Status}}" d="{{.Path}}" marker-end="url(#arrow)"><title>{{.Condition}}</title></path>{{end}}
+      {{range .Diagram.Nodes}}
+      <g role="group" class="graph-node {{.State}}" transform="translate({{.X}} {{.Y}})">
+        <title>{{.Key}} · {{.Queue}}{{if .State}} · {{status .State}}{{end}}</title>
+        <rect width="166" height="62" rx="10" class="node-card"/>
+        <circle cx="15" cy="21" r="4"/>
+        <text x="26" y="25" class="node-label">{{short .Key}}</text>
+        <text x="13" y="44" class="node-sub">{{if .State}}{{status .State}}{{else}}{{short .Queue}}{{end}}</text>
+      </g>
+      {{end}}
+    </svg>
+  </div>
+{{end}}
+
+{{define "pager"}}{{if .Next}}<nav class="pager" aria-label="分页"><a class="button secondary" href="{{.Next}}">下一页 →</a></nav>{{end}}{{end}}

@@ -1,0 +1,36 @@
+# 浏览器管理站
+
+管理站与 CLI 使用同一个 MySQL 工作空间和运行记录。浏览器只连接控制台 HTTP 接口。启动命令从 `WORKFLOW_MYSQL_DSN` 读取数据库连接。
+
+```sh
+workflow migrate
+workflow workspace-create demo
+workflow console-grant demo demo-operator operator
+workflow console-grant demo demo-author author
+workflow console-grant demo demo-viewer viewer
+workflow console --listen 127.0.0.1:8081
+```
+
+打开 `http://127.0.0.1:8081`，输入对应账号返回的 `token`。凭据只在签发时显示，需通过私密渠道交给对应账号持有人。控制台按凭据识别工作空间和审计人。凭据只用于管理站登录，执行节点使用单独的 Worker 令牌。
+
+| 角色 | 可以执行 |
+| --- | --- |
+| `viewer` | 浏览本工作空间的版本、运行、节点与审计，导出报告。 |
+| `author` | 拥有只读权限，可导入、创建、编辑和校验草稿，在编辑器中导出定义。 |
+| `operator` | 可发布校验过的工作流、触发运行、取消、部分重跑及核对外部动作。 |
+
+同一空间与账号重新签发会轮换凭据并清除其现有登录会话。取消工作空间访问用 `workflow console-revoke demo demo-operator`。会话在签发后八小时过期。MySQL 保存登录凭据及会话值的摘要。
+
+## 浏览器走查
+
+1. 登录后进入「工作流」，创建或导入 `examples/diamond.json`。也可填写工作流键和第一个节点，用编辑器把节点写入定义。选择「校验并预览」查看 DAG。尝试将节点互为前置，再校验以查看环路定位。
+2. 运维账号从基础版本 `0` 发布。编辑已发布工作流时以所加载版本为基线。若同期已有其他版本发布，对照提示中的当前版本与节点差异，再决定是否更新基线和提交。
+3. 在工作流详情触发运行。触发键可用于识别重复提交，输入可以使用 `examples/diamond-inputs.json`。启动有权限的 Worker 后，在运行页面刷新查看结果。执行进程与授权的设置见 [Worker HTTP 接口](worker-api.md)。
+4. 在「运行记录」按工作流、状态或 UTC 时间筛选。打开运行查看执行图、各节点依赖判定、租约、排队耗时、尝试、日志片段和审计。附件导出沿用工作空间访问权限。
+5. 对以失败结束的运行，选择失败节点并预览影响范围。创建子运行后可打开父子对照和各自的报告，核对版本、输入摘要、重跑节点和上游产物。 [部分重跑](rerun.md)
+
+## 部署入口
+
+管理站服务监听回环地址。异机访问时在同一主机设置 HTTPS 反向代理，保留请求的 `Host` 并启用 `workflow console --secure-cookie`。反向代理转发管理站根路径并保留表单来源头。管理站的会话 Cookie 只用于管理站域名和路径 `/`，建议使用独立域名。健康检查 `GET /healthz` 提供服务进程探测。
+
+Windows 的 `scripts/test-mysql.ps1` 会启动隔离 MySQL、Worker API 和管理站，验证发布及版本冲突、运行筛选、取消、重跑、报告导出、跨工作空间访问限制和会话撤回。

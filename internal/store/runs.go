@@ -80,13 +80,14 @@ type NodeRun struct {
 }
 
 type RunDetail struct {
-	Run          Run           `json:"run"`
-	Version      Version       `json:"version"`
-	Nodes        []NodeRun     `json:"nodes"`
-	Cancellation *Cancellation `json:"cancellation,omitempty"`
-	InputDigest  string        `json:"input_digest"`
-	Rerun        *RerunRecord  `json:"rerun,omitempty"`
-	RecentReruns []RerunChild  `json:"recent_reruns,omitempty"`
+	Run          Run             `json:"run"`
+	Version      Version         `json:"version"`
+	Nodes        []NodeRun       `json:"nodes"`
+	Cancellation *Cancellation   `json:"cancellation,omitempty"`
+	InputDigest  string          `json:"input_digest"`
+	Rerun        *RerunRecord    `json:"rerun,omitempty"`
+	RecentReruns []RerunChild    `json:"recent_reruns,omitempty"`
+	Audit        []RunAuditEvent `json:"audit,omitempty"`
 }
 
 // Trigger installs the run and all its initial nodes in one transaction. Looking
@@ -210,9 +211,13 @@ func (s *Store) GetRun(ctx context.Context, scope Scope, id int64) (RunDetail, e
 	if err != nil {
 		return RunDetail{}, err
 	}
+	audit, err := listRunAudit(ctx, tx, workspace, id)
+	if err != nil {
+		return RunDetail{}, err
+	}
 	run.Workspace, run.DAG = scope.Workspace, version.Graph.Definition.Key
 	return RunDetail{Run: run, Version: version, Nodes: nodes, Cancellation: cancellation,
-		InputDigest: inputDigest(run.Inputs), Rerun: rerun, RecentReruns: children}, tx.Commit()
+		InputDigest: inputDigest(run.Inputs), Rerun: rerun, RecentReruns: children, Audit: audit}, tx.Commit()
 }
 
 const runColumns = `id, dag_id, schedule_id, revision, trigger_key, trigger_kind, logical_at,

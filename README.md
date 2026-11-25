@@ -30,6 +30,17 @@ go run ./cmd/workflow run demo 1
 
 触发键在同一工作空间的同一工作流内唯一。调用方超时后可用原键和原请求重送，响应会返回已登记的运行。输入对象的字段顺序和空白不影响请求摘要。同一键改用其他输入、触发类型、显式版本或逻辑时刻时，命令返回冲突，并保存原请求和新请求的摘要。`--revision` 可明确选择历史版本，`--logical-at` 接受 RFC 3339 时间并按 UTC 保存。
 
+## 浏览器管理站
+
+初始化工作空间后，可签发浏览器登录凭据，用管理站创建或导入 DAG、校验发布、触发运行、查看依赖与尝试、取消、核对外部动作、部分重跑以及导出报告。安装和角色说明见 [管理站指南](docs/console.md)。
+
+```sh
+go run ./cmd/workflow console-grant demo demo-operator operator
+go run ./cmd/workflow console --listen 127.0.0.1:8081
+```
+
+在浏览器打开 `http://127.0.0.1:8081`，输入签发命令返回的 `token`。
+
 ## 执行示例工作流
 
 运维端注册 Worker，从响应中安全提取一次性显示的 `token`，注入 Worker 进程的 `WORKFLOW_WORKER_TOKEN` 环境变量。以下命令在上述 `demo` 工作空间注册示例处理器，并在运维端启动 Worker API。

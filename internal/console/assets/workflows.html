@@ -1,0 +1,62 @@
+{{define "workflows"}}
+  <header class="page-head"><div><h1>工作流</h1><p>已发布的工作流及其当前版本。</p></div>{{if .Auth.CanAuthor}}<a class="button primary" href="/editor">创建或导入</a>{{end}}</header>
+  <section class="panel table-wrap" aria-label="工作流列表">
+    {{if .Workflows}}<table><thead><tr><th>工作流</th><th>当前版本</th><th>发布人</th><th>发布时间 (UTC)</th></tr></thead>
+    <tbody>{{range .Workflows}}<tr><td><a class="mono" href="/workflows/{{.Key}}">{{.Key}}</a></td><td>v{{.Revision}}</td><td>{{.Publisher}}</td><td>{{date .PublishedAt}}</td></tr>{{end}}</tbody></table>
+    {{else}}<div class="empty"><strong>还没有已发布的工作流</strong><p>{{if .Auth.CanAuthor}}从编辑器导入一个 DAG 定义，或创建节点后提交校验。{{else}}发布后，工作流会显示在这里。{{end}}</p></div>{{end}}
+  </section>
+  {{template "pager" .}}
+{{end}}
+
+{{define "workflow"}}
+  {{$version := .Version}}{{$key := .Title}}
+  <a class="back" href="/workflows">← 工作流</a>
+  <header class="page-head"><div><h1>{{$key}}</h1><p>版本 {{$version.Revision}} · {{$version.Publisher}} · {{date $version.PublishedAt}} UTC</p></div>
+    {{if .Auth.CanAuthor}}<a class="button secondary" href="/editor?from={{$key}}">编辑活动版本</a>{{end}}
+  </header>
+  <section class="panel"><div class="panel-head"><h2>DAG 依赖</h2><span class="subtle">{{len .Diagram.Nodes}} 个节点</span></div>{{template "graph" .}}</section>
+  <section class="panel padded">
+    <div class="split"><h2>版本与定义</h2><form class="inline" action="/workflows/{{$key}}" method="get"><label>版本号<input type="number" name="revision" min="1" value="{{$version.Revision}}" required></label><button class="secondary" type="submit">查看</button></form></div>
+    <p class="digest mono">{{$version.Graph.Digest}}</p><details><summary>查看 JSON 定义</summary><pre>{{json $version.Graph.Definition}}</pre></details>
+  </section>
+  {{if .Auth.CanOperate}}
+  <section class="panel padded"><h2>触发运行</h2><p class="subtle">本次运行使用版本 {{$version.Revision}}。</p>
+    <form class="form-stack" method="post" action="/workflows/{{$key}}/trigger">
+      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><input type="hidden" name="revision" value="{{$version.Revision}}">
+      <div class="fields"><label>触发键<input name="key" value="{{.Trigger.Key}}" maxlength="128" required placeholder="dispatch-2026-11-25"></label>
+        <label>来源<select name="kind"><option value="manual"{{if eq .Trigger.Kind "manual"}} selected{{end}}>手工</option><option value="external"{{if eq .Trigger.Kind "external"}} selected{{end}}>外部事件</option></select></label>
+        <label>业务时间 (UTC，可选)<input name="logical_at" value="{{.Trigger.LogicalAt}}" placeholder="2026-11-25T08:30:00Z"></label></div>
+      <label>输入 JSON<textarea name="inputs" rows="4" required spellcheck="false">{{.Trigger.Inputs}}</textarea></label>
+      <div><button class="primary" type="submit">触发运行</button></div>
+    </form>
+  </section>
+  {{end}}
+{{end}}
+
+{{define "editor"}}
+  <a class="back" href="/workflows">← 工作流</a>
+  <header class="page-head"><div><h1>工作流编辑器</h1><p>导入 JSON 定义，或在编辑器中创建、修改并校验节点。</p></div></header>
+  {{if .Diff}}<section class="panel padded"><h2>与当前版本的差异</h2><ul>{{range .Diff}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+  <section class="panel padded" data-editor>
+    <form class="form-stack" method="post" action="/editor">
+      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <div class="fields editor-fields"><label>基础版本<input type="number" name="revision" min="0" value="{{.Revision}}" required></label>
+        <label class="file-label">导入定义文件<input type="file" accept=".json,application/json" data-import></label></div>
+      <label>定义 JSON <textarea name="source" rows="17" spellcheck="false" data-source required placeholder='{"key":"daily-dispatch","nodes":[...]}' >{{.Source}}</textarea></label>
+      <p class="field-message" data-editor-message aria-live="polite"></p>
+      <div class="actions"><button class="secondary" type="submit" name="command" value="validate">校验并预览</button>
+        {{if .Auth.CanOperate}}<button class="primary" type="submit" name="command" value="publish">发布版本</button>{{end}}
+        <button class="secondary" type="button" data-download>导出 JSON</button></div>
+    </form>
+    <div class="node-editor" data-graph-editor hidden>
+      <h2>编辑节点</h2>
+      <div class="fields editor-fields"><label>工作流键<input data-workflow-key placeholder="daily-dispatch"></label>
+        <label>节点<select data-node-list></select></label></div>
+      <div class="fields"><label>节点键<input data-node-key></label><label>任务类型<input data-node-task></label><label>队列<input data-node-queue></label>
+        <label>超时秒数<input type="number" min="1" data-node-timeout></label></div>
+      <label>前置节点（默认成功后运行）<select multiple data-depends size="4"></select></label>
+      <div class="actions"><button type="button" class="secondary" data-apply-node>写入定义</button></div>
+    </div>
+  </section>
+  {{if .Diagram.Nodes}}<section class="panel"><div class="panel-head"><h2>已校验的 DAG</h2><span class="subtle">{{len .Diagram.Nodes}} 个节点</span></div>{{template "graph" .}}</section>{{end}}
+{{end}}
