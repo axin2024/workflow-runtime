@@ -27,7 +27,9 @@
     <div class="workspace"><span>工作空间</span><strong>{{.Auth.Workspace}}</strong></div>
     <nav aria-label="主导航">
       <a href="/"{{if or (eq .Section "runs") (eq .Section "run") (eq .Section "compare")}} aria-current="page"{{end}}><span aria-hidden="true">◷</span>运行记录</a>
-      <a href="/workflows"{{if eq .Section "workflows" "workflow"}} aria-current="page"{{end}}><span aria-hidden="true">◇</span>工作流</a>
+      <a href="/workflows"{{if eq .Section "workflows" "workflow" "schedules" "schedule"}} aria-current="page"{{end}}><span aria-hidden="true">◇</span>工作流</a>
+      <a href="/backfills"{{if eq .Section "backfills" "backfill"}} aria-current="page"{{end}}><span aria-hidden="true">↺</span>历史补跑</a>
+      <a href="/capacity"{{if eq .Section "capacity"}} aria-current="page"{{end}}><span aria-hidden="true">▤</span>执行配额</a>
       {{if .Auth.CanAuthor}}<a href="/editor"{{if eq .Section "editor"}} aria-current="page"{{end}}><span aria-hidden="true">＋</span>创建与导入</a>{{end}}
     </nav>
     <div class="identity"><strong>{{.Auth.Actor}}</strong><small>{{.Auth.Role}}</small>
@@ -42,6 +44,11 @@
     {{if eq .Section "workflows"}}{{template "workflows" .}}{{end}}
     {{if eq .Section "workflow"}}{{template "workflow" .}}{{end}}
     {{if eq .Section "editor"}}{{template "editor" .}}{{end}}
+    {{if eq .Section "schedules"}}{{template "schedules" .}}{{end}}
+    {{if eq .Section "schedule"}}{{template "schedule" .}}{{end}}
+    {{if eq .Section "backfills"}}{{template "backfills" .}}{{end}}
+    {{if eq .Section "backfill"}}{{template "backfill" .}}{{end}}
+    {{if eq .Section "capacity"}}{{template "capacity" .}}{{end}}
   </main>
 {{end}}
 </body>

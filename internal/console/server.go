@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +46,9 @@ func Handler(db *store.Store, logger *log.Logger, secureCookie bool) (http.Handl
 	templates, err := template.New("layout").Funcs(template.FuncMap{
 		"json": prettyJSON, "date": date, "optionalDate": optionalDate,
 		"status": stateLabel, "deref": deref[string], "duration": duration, "elapsed": elapsed,
-		"short": shorten,
+		"short":     shorten,
+		"timestamp": timestamp, "backfillState": backfillState, "quota": quotaLabel, "limitInput": limitInput,
+		"selected": slices.Contains[[]int, int],
 	}).ParseFS(files, "assets/*.html")
 	if err != nil {
 		return nil, err
@@ -71,6 +74,16 @@ func Handler(db *store.Store, logger *log.Logger, secureCookie bool) (http.Handl
 	mux.HandleFunc("GET /editor", s.protect(s.editor))
 	mux.HandleFunc("POST /editor", s.protect(s.edit))
 	mux.HandleFunc("POST /workflows/{key}/trigger", s.protect(s.trigger))
+	mux.HandleFunc("GET /workflows/{key}/schedules", s.protect(s.schedules))
+	mux.HandleFunc("POST /workflows/{key}/schedules", s.protect(s.saveSchedule))
+	mux.HandleFunc("GET /workflows/{key}/schedules/{schedule}", s.protect(s.schedule))
+	mux.HandleFunc("POST /workflows/{key}/schedules/{schedule}", s.protect(s.saveSchedule))
+	mux.HandleFunc("POST /workflows/{key}/schedules/{schedule}/backfill", s.protect(s.previewBackfill))
+	mux.HandleFunc("GET /backfills", s.protect(s.backfills))
+	mux.HandleFunc("GET /backfills/{id}", s.protect(s.backfill))
+	mux.HandleFunc("POST /backfills/{id}/{action}", s.protect(s.backfillAction))
+	mux.HandleFunc("GET /capacity", s.protect(s.capacity))
+	mux.HandleFunc("POST /capacity/{resource}", s.protect(s.saveCapacity))
 	protected := http.NewCrossOriginProtection().Handler(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")

@@ -32,7 +32,7 @@ go run ./cmd/workflow run demo 1
 
 ## 浏览器管理站
 
-初始化工作空间后，可签发浏览器登录凭据，用管理站创建或导入 DAG、校验发布、触发运行、查看依赖与尝试、取消、核对外部动作、部分重跑以及导出报告。安装和角色说明见 [管理站指南](docs/console.md)。
+初始化工作空间后，可签发浏览器登录凭据，在管理站发布 DAG、配置定时计划、选择历史补跑时刻、调整执行配额、诊断运行和导出报告。安装和角色说明见 [管理站指南](docs/console.md)。
 
 ```sh
 go run ./cmd/workflow console-grant demo demo-operator operator

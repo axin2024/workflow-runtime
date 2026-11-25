@@ -12,7 +12,8 @@
   {{$version := .Version}}{{$key := .Title}}
   <a class="back" href="/workflows">← 工作流</a>
   <header class="page-head"><div><h1>{{$key}}</h1><p>版本 {{$version.Revision}} · {{$version.Publisher}} · {{date $version.PublishedAt}} UTC</p></div>
-    {{if .Auth.CanAuthor}}<a class="button secondary" href="/editor?from={{$key}}">编辑活动版本</a>{{end}}
+    <div class="actions"><a class="button secondary" href="/workflows/{{$key}}/schedules">定时计划</a>
+    {{if .Auth.CanAuthor}}<a class="button secondary" href="/editor?from={{$key}}">编辑活动版本</a>{{end}}</div>
   </header>
   <section class="panel"><div class="panel-head"><h2>DAG 依赖</h2><span class="subtle">{{len .Diagram.Nodes}} 个节点</span></div>{{template "graph" .}}</section>
   <section class="panel padded">

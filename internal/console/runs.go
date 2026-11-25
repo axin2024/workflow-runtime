@@ -220,7 +220,7 @@ func (s server) actionError(w http.ResponseWriter, r *http.Request, data page, e
 	case errors.As(err, &databaseError):
 		s.internalError(w, err)
 		return
-	case errors.Is(err, store.ErrRunControlConflict):
+	case errors.Is(err, store.ErrRunControlConflict), errors.Is(err, store.ErrCapacityConflict), errors.Is(err, store.ErrBackfillSelectionChanged):
 		status = http.StatusConflict
 	}
 	data.Problem = strings.TrimSpace(err.Error())

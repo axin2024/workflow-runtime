@@ -1,0 +1,37 @@
+{{define "backfills"}}
+  <header class="page-head"><div><h1>历史补跑</h1><p>查看候选、已确认批次和逐项运行回执。</p></div><a href="/workflows" class="button secondary">查看工作流计划</a></header>
+  <section class="panel table-wrap" aria-label="补跑批次列表">
+    {{if .Backfills}}
+    <table><thead><tr><th>批次</th><th>工作流与计划</th><th>DAG 版本</th><th>状态</th><th>创建时间 (UTC)</th></tr></thead>
+      <tbody>{{range .Backfills}}<tr><td><a class="mono" href="/backfills/{{.ID}}">#{{.ID}}</a></td><td><a href="/workflows/{{.DAG}}/schedules/{{.Schedule}}">{{.DAG}} / {{.Schedule}}</a></td>
+        <td>v{{.Revision}}</td><td><span class="status {{.State}}">{{backfillState .State}}</span></td><td>{{date .CreatedAt}}</td></tr>{{end}}</tbody></table>
+    {{else}}<div class="empty"><strong>还没有补跑批次</strong><p>可在定时计划详情中生成历史时刻的预览。</p></div>{{end}}
+  </section>
+  {{template "pager" .}}
+{{end}}
+
+{{define "backfill"}}
+  {{$batch := .Batch}}{{$confirm := and .Auth.CanOperate (eq $batch.State "draft")}}
+  <a class="back" href="/backfills">← 历史补跑</a>
+  <header class="page-head" data-batch-id="{{$batch.ID}}"><div><h1>{{.Title}} <span class="status {{$batch.State}}">{{backfillState $batch.State}}</span></h1>
+    <p><a href="/workflows/{{$batch.DAG}}/schedules/{{$batch.Schedule}}">{{$batch.DAG}} / {{$batch.Schedule}}</a> · <a href="/workflows/{{$batch.DAG}}?revision={{$batch.Revision}}">v{{$batch.Revision}}</a></p></div>
+    {{if and .Auth.CanOperate (eq $batch.State "confirmed")}}<form method="post" action="/backfills/{{$batch.ID}}/resume">
+      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><button class="primary" type="submit">继续登记</button></form>{{end}}
+  </header>
+  <dl class="panel run-summary"><div><dt>业务时区</dt><dd>{{$batch.Timezone}}</dd></div>
+    <div><dt>起始 (UTC)</dt><dd>{{date $batch.From}}</dd></div><div><dt>结束 (UTC)</dt><dd>{{date $batch.Through}}</dd></div>
+    <div><dt>创建人</dt><dd>{{$batch.CreatedBy}}</dd></div></dl>
+  <section class="panel padded"><h2>版本与输入快照</h2><dl class="inline-metadata"><div><dt>定义摘要</dt><dd class="mono">{{$batch.GraphDigest}}</dd></div>
+    <div><dt>输入摘要</dt><dd class="mono">{{$batch.InputDigest}}</dd></div><div><dt>计划版本</dt><dd>{{$batch.ScheduleGeneration}}</dd></div></dl></section>
+  <section class="panel"><div class="panel-head"><h2>候选时刻与回执</h2><span class="subtle">{{len $batch.Items}} 个时刻</span></div>
+    {{if $confirm}}<form method="post" action="/backfills/{{$batch.ID}}/confirm"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}">{{end}}
+    <div class="table-wrap"><table><thead><tr>{{if $confirm}}<th>选择</th>{{end}}<th>业务时间</th><th>UTC 时间</th><th>状态</th><th>运行</th><th>影响</th></tr></thead>
+      <tbody>{{range $batch.Items}}<tr data-ordinal="{{.Ordinal}}" data-state="{{.State}}">
+        {{if $confirm}}<td>{{if eq .State "available"}}<input type="checkbox" name="ordinals" value="{{.Ordinal}}" aria-label="选择时刻 {{.LocalAt}}"{{if selected $.Selected .Ordinal}} checked{{end}}>{{else}}—{{end}}</td>{{end}}
+        <td>{{.LocalAt}}</td><td>{{date .LogicalAt}}</td><td><span class="status {{.State}}">{{backfillState .State}}</span></td>
+        <td>{{if .RunID}}<a href="/runs/{{.RunID}}">#{{.RunID}} · v{{.RunRevision}}</a>{{else if .BaselineRunID}}<a href="/runs/{{.BaselineRunID}}">#{{.BaselineRunID}} · v{{.BaselineRevision}}</a>{{else}}—{{end}}</td>
+        <td><details><summary>{{len .Impact}} 个节点</summary><dl class="impact-list"><div><dt>触发键</dt><dd class="mono">{{.TriggerKey}}</dd></div>
+          {{range .Impact}}<div><dt>{{.Node}} · {{.Effect}}</dt><dd class="mono">{{.OperationKey}}</dd></div>{{end}}</dl></details></td></tr>{{end}}</tbody></table></div>
+    {{if $confirm}}<div class="padded actions"><button class="primary" type="submit">确认并登记选中时刻</button><span class="subtle">确认后选集锁定。</span></div></form>{{end}}
+  </section>
+{{end}}

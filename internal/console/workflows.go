@@ -36,6 +36,14 @@ type page struct {
 	Trigger         triggerForm
 	Compare         *store.RunDetail
 	Comparison      []nodeComparison
+	DAG             string
+	Schedules       []store.ScheduleSummary
+	ScheduleEdit    *scheduleForm
+	Backfills       []store.BackfillSummary
+	Batch           *store.BackfillBatch
+	BackfillDraft   *backfillForm
+	Selected        []int
+	Capacity        *capacityPage
 }
 
 func (s server) workflows(w http.ResponseWriter, r *http.Request, auth session) {

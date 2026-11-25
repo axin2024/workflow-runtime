@@ -82,6 +82,11 @@ tbody tr:hover { background: #fbfbff; }
 .form-stack { display: grid; gap: 13px; margin-top: 13px; }
 .inline { display: flex; gap: .65rem; align-items: end; }
 .inline input { width: 90px; }
+.inline input.queue-key, .quota-form input { width: min(100%, 150px); }
+.impact-list { max-width: 400px; min-width: 135px; white-space: normal; }
+.impact-list div { margin-bottom: .45rem; }
+.status.completed, .status.created, .status.reused { color: #0a603e; background: #dff5e9; }
+.status.confirmed, .status.pending { color: #784000; background: #fff0d7; }
 .compact { border-top: 1px solid var(--stroke); padding-top: 10px; }
 .checks { display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
 .checks label { display: flex; align-items: center; gap: .3rem; }

@@ -1,0 +1,32 @@
+{{define "capacity"}}
+  {{$data := .Capacity}}{{$draft := $data.Draft}}{{$workspace := $data.Workspace}}
+  <header class="page-head"><div><h1>执行配额</h1><p>{{.Auth.Workspace}} · 限制同时持有的有效租约数。</p></div></header>
+  <section class="panel padded"><h2>工作空间配额</h2>
+    <dl class="inline-metadata"><div><dt>有效租约</dt><dd>{{$workspace.Active}}</dd></div><div><dt>当前上限</dt><dd>{{quota $workspace.MaxActive}}</dd></div>
+      <div><dt>配置版本</dt><dd>{{$workspace.Generation}}</dd></div><div><dt>更新人</dt><dd>{{if $workspace.UpdatedBy}}{{deref $workspace.UpdatedBy}}{{else}}—{{end}}</dd></div></dl>
+    {{if .Auth.CanOperate}}<form class="inline quota-form" method="post" action="/capacity/workspace"><input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+      <input type="hidden" name="generation" value="{{if and $draft (eq $draft.Resource "workspace")}}{{$draft.Generation}}{{else}}{{$workspace.Generation}}{{end}}">
+      <label>并发上限（留空不限）<input type="number" min="0" max="10000" name="maximum" value="{{if and $draft (eq $draft.Resource "workspace")}}{{$draft.Maximum}}{{else}}{{limitInput $workspace.MaxActive}}{{end}}"></label>
+      <button class="primary" type="submit">保存工作空间配额</button></form>{{end}}
+  </section>
+  <section class="panel padded"><div class="split"><h2>队列配额</h2>
+    <form class="inline" action="/capacity" method="get"><label>队列键<input class="queue-key" name="queue" value="{{if $data.Queue}}{{$data.Queue.Queue}}{{end}}" placeholder="reports" required></label>
+      <button class="secondary" type="submit">查看队列</button></form></div>
+    {{with $queue := $data.Queue}}
+      <dl class="inline-metadata"><div><dt>有效租约</dt><dd>{{$queue.Active}}</dd></div><div><dt>当前上限</dt><dd>{{quota $queue.MaxActive}}</dd></div>
+        <div><dt>配置版本</dt><dd>{{$queue.Generation}}</dd></div><div><dt>绑定的资源池</dt><dd>{{if $queue.Pool}}{{$queue.Pool}}{{else}}—{{end}}</dd></div>
+        <div><dt>更新人</dt><dd>{{if $queue.UpdatedBy}}{{deref $queue.UpdatedBy}}{{else}}—{{end}}</dd></div></dl>
+      {{if $.Auth.CanOperate}}<form class="inline quota-form" method="post" action="/capacity/queue"><input type="hidden" name="csrf" value="{{$.Auth.CSRF}}">
+        <input type="hidden" name="queue" value="{{$queue.Queue}}"><input type="hidden" name="generation" value="{{if and $draft (eq $draft.Resource "queue")}}{{$draft.Generation}}{{else}}{{$queue.Generation}}{{end}}">
+        <label>并发上限（留空不限）<input type="number" min="0" max="10000" name="maximum" value="{{if and $draft (eq $draft.Resource "queue")}}{{$draft.Maximum}}{{else}}{{limitInput $queue.MaxActive}}{{end}}"></label>
+        <button class="primary" type="submit">保存队列配额</button></form>{{end}}
+    {{end}}
+  </section>
+  <section class="panel table-wrap" aria-label="已配置的队列">
+    {{if $data.Queues}}<table><thead><tr><th>队列</th><th>并发上限</th><th>共享资源池</th><th>配置版本</th></tr></thead>
+      <tbody>{{range $data.Queues}}<tr><td><a class="mono" href="/capacity?queue={{.Queue}}">{{.Queue}}</a></td><td>{{quota .MaxActive}}</td>
+        <td>{{if .Pool}}{{.Pool}}{{else}}—{{end}}</td><td>{{.Generation}}</td></tr>{{end}}</tbody></table>
+    {{else}}<div class="empty"><strong>还没有已配置的队列</strong><p>输入队列键可查看使用量，或为该队列添加配额。</p></div>{{end}}
+  </section>
+  {{template "pager" .}}
+{{end}}

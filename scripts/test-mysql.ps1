@@ -316,6 +316,92 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     $browserReport = Invoke-RestMethod -Uri "$consoleOrigin/runs/$browserChildID/report.json" -WebSession $ops
     if ($comparison.Content -notmatch "/runs/$($failedRun.run.id)/report.json" -or $browserReport.detail.rerun.actor -ne 'console-operator' -or
         $browserReport.detail.rerun.plan.parent_run_id -ne $failedRun.run.id) { throw 'Console reports lost source or actor information' }
+
+    $plansURL = "$consoleOrigin/workflows/console-dispatch/schedules"
+    $planURL = "$plansURL/console-hourly"
+    $planForm = @{csrf = $csrf; generation = '0'; key = 'console-hourly'; cron = '0 * * * *'; zone = 'Asia/Shanghai';
+        misfire = 'catch_up'; grace = '60'; limit = '1'; revision = '1'; start_after = '2025-11-01T00:00:00+08:00';
+        inputs = '{"rows":2,"source":"console"}'; enabled = '1'}
+    $savedPlan = Invoke-WebRequest -Method Post -Uri $plansURL -WebSession $ops -Body $planForm -ContentType 'application/x-www-form-urlencoded'
+    if ($savedPlan.Content -notmatch 'name="generation" value="1"' -or $savedPlan.Content -notmatch 'Asia/Shanghai') { throw 'Console did not show the new schedule' }
+    $plan = & $binary schedule-get demo console-dispatch console-hourly | ConvertFrom-Json
+    Assert-NativeExit 'read the console schedule through the CLI'
+    if (!$plan.enabled -or $plan.revision -ne 1 -or $plan.max_active_runs -ne 1) { throw 'Console schedule was not persisted with its submitted values' }
+    $planForm.generation = '1'
+    $planForm.enabled = '0'
+    $paused = Invoke-WebRequest -Method Post -Uri $planURL -WebSession $ops -Body $planForm -ContentType 'application/x-www-form-urlencoded'
+    if ($paused.Content -notmatch 'name="generation" value="2"') { throw 'Pause did not advance the schedule generation' }
+    $stalePlan = Invoke-WebRequest -Method Post -Uri $planURL -WebSession $ops -Body $planForm -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck
+    $readPlan = & $binary schedule-get demo console-dispatch console-hourly | ConvertFrom-Json
+    Assert-NativeExit 'read the paused console schedule'
+    $foreignPlan = Invoke-WebRequest -Uri $planURL -WebSession $readOnly -SkipHttpErrorCheck
+    if ($stalePlan.StatusCode -ne 409 -or $readPlan.enabled -or $readPlan.next_at -ne $plan.next_at -or $foreignPlan.StatusCode -ne 404) {
+        throw 'Schedule pause, generation fencing, cursor preservation, or workspace isolation failed'
+    }
+
+    $preview = Invoke-WebRequest -Method Post -Uri "$planURL/backfill" -WebSession $ops -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{csrf = $csrf; revision = '1'; from = '2025-11-01T01:00:00+08:00'; through = '2025-11-01T07:00:00+08:00'}
+    $batchID = [regex]::Match($preview.Content, 'data-batch-id="(\d+)"').Groups[1].Value
+    if (!$batchID -or [regex]::Matches($preview.Content, 'name="ordinals"').Count -ne 7) { throw 'Console preview did not show exactly seven selectable times' }
+    $selection = "csrf=$csrf&ordinals=1&ordinals=3&ordinals=6"
+    $submitted = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/backfills/$batchID/confirm" -WebSession $ops `
+        -Body $selection -ContentType 'application/x-www-form-urlencoded'
+    if ([regex]::Matches($submitted.Content, 'data-state="created"').Count -ne 1 -or
+        [regex]::Matches($submitted.Content, 'data-state="pending"').Count -ne 2 -or
+        [regex]::Matches($submitted.Content, 'data-state="excluded"').Count -ne 4) { throw 'Console backfill did not preserve the capacity-blocked occurrences' }
+    $selectionConflict = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/backfills/$batchID/confirm" -WebSession $ops `
+        -Body "csrf=$csrf&ordinals=2" -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck
+    $foreignBatch = Invoke-WebRequest -Uri "$consoleOrigin/backfills/$batchID" -WebSession $readOnly -SkipHttpErrorCheck
+    if ($selectionConflict.StatusCode -ne 409 -or $foreignBatch.StatusCode -ne 404) { throw 'Backfill selection or workspace boundary was bypassed' }
+    $firstReceipt = & $binary backfill-get demo $batchID | ConvertFrom-Json
+    Assert-NativeExit 'read the first backfill receipt'
+    $ids = @($firstReceipt.items[0].run_id)
+    foreach ($index in @(2, 5)) {
+        $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/runs/$($ids[-1])/cancel" -WebSession $ops `
+            -Body @{csrf = $csrf; key = "free-backfill-slot-$index"; grace = '0'; reason = 'free the fixture schedule slot'} -ContentType 'application/x-www-form-urlencoded'
+        $unused = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/backfills/$batchID/resume" -WebSession $ops `
+            -Body @{csrf = $csrf} -ContentType 'application/x-www-form-urlencoded'
+        $receipt = & $binary backfill-get demo $batchID | ConvertFrom-Json
+        Assert-NativeExit 'read a resumed backfill receipt'
+        if (!$receipt.items[$index].run_id) { throw 'Resumed backfill did not allocate the next run' }
+        $ids += $receipt.items[$index].run_id
+    }
+    $replayedBatch = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/backfills/$batchID/confirm" -WebSession $ops `
+        -Body $selection -ContentType 'application/x-www-form-urlencoded'
+    $batchIndex = Invoke-WebRequest -Uri "$consoleOrigin/backfills" -WebSession $ops
+    $finalBatch = & $binary backfill-get demo $batchID | ConvertFrom-Json
+    Assert-NativeExit 'read the final backfill receipts'
+    $finalIDs = @($finalBatch.items | Where-Object state -eq created | ForEach-Object run_id)
+    if ($finalBatch.state -ne 'completed' -or ($ids -join ',') -ne ($finalIDs -join ',') -or $finalIDs.Count -ne 3 -or
+        $batchIndex.Content -notmatch "href=`"/backfills/$batchID`"" -or $replayedBatch.Content -notmatch 'data-state="created"') {
+        throw 'Console did not recover and replay the same three backfill receipts'
+    }
+
+    $capacityHome = Invoke-WebRequest -Uri "$consoleOrigin/capacity?queue=reports" -WebSession $ops
+    if ($capacityHome.Content -notmatch 'report-executors' -or $capacityHome.Content -notmatch 'action="/capacity/queue"') {
+        throw 'Console did not display the queue capacity and its existing pool'
+    }
+    $workspaceLimit = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/capacity/workspace" -WebSession $ops `
+        -Body @{csrf = $csrf; generation = '1'; maximum = '4'} -ContentType 'application/x-www-form-urlencoded'
+    $queueLimit = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/capacity/queue" -WebSession $ops `
+        -Body @{csrf = $csrf; generation = '1'; maximum = '1'; queue = 'reports'; pool = 'unassigned-pool'} -ContentType 'application/x-www-form-urlencoded'
+    $staleQueue = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/capacity/queue" -WebSession $ops -SkipHttpErrorCheck `
+        -Body @{csrf = $csrf; generation = '1'; maximum = '0'; queue = 'reports'} -ContentType 'application/x-www-form-urlencoded'
+    $otherCapacity = Invoke-WebRequest -Uri "$consoleOrigin/capacity?queue=reports" -WebSession $readOnly
+    $otherCsrf = Get-ConsoleCsrf $otherCapacity.Content
+    $deniedQuota = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/capacity/queue" -WebSession $readOnly -SkipHttpErrorCheck `
+        -Body @{csrf = $otherCsrf; generation = '0'; maximum = '0'; queue = 'reports'} -ContentType 'application/x-www-form-urlencoded'
+    $readWorkspace = & $binary workspace-quota-get demo | ConvertFrom-Json
+    Assert-NativeExit 'read the console workspace quota'
+    $readQueue = & $binary queue-quota-get demo reports | ConvertFrom-Json
+    Assert-NativeExit 'read the console queue quota'
+    if ($workspaceLimit.StatusCode -ne 200 -or $queueLimit.StatusCode -ne 200 -or $staleQueue.StatusCode -ne 409 -or
+        $deniedQuota.StatusCode -ne 403 -or $otherCapacity.Content -match 'report-executors' -or $readWorkspace.max_active -ne 4 -or
+        $readQueue.max_active -ne 1 -or $readQueue.generation -ne 2 -or $readQueue.pool -ne 'report-executors') {
+        throw 'Console quota generation, saved values, or role boundary failed'
+    }
+    Write-Output 'Console schedule pause preserved its cursor. Backfill froze three of seven times and resumed as slots reopened. Console quota changes preserved the shared-pool assignment.'
+
     & $binary console-revoke demo console-operator | Out-Null
     Assert-NativeExit 'revoke the console operator'
     $closed = Invoke-WebRequest -Uri "$consoleOrigin/runs/$browserChildID" -WebSession $ops
