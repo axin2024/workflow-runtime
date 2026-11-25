@@ -101,4 +101,6 @@ go run ./cmd/workflow backfill-resume demo 1
 
 ## MySQL 集成测试
 
-Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、历史版本、跨工作空间隔离、冲突审计、调度与补跑、租约失效接管、并行分支汇合、失败清理、取消和外部任务核对。脚本还用两个 Worker 身份经 HTTP 执行示例并回读 MySQL。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
+Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、历史版本、跨工作空间隔离、冲突审计、调度与补跑、租约失效接管、并行分支汇合、失败清理、取消和外部任务核对。脚本还用两个 Worker 身份经 HTTP 执行示例，随后将数据库备份恢复到另一个本机 MySQL 实例，并核对数据与历史回执。备份和上线切换操作见 [MySQL 备份、恢复与升级](docs/recovery.md)。
+
+也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。

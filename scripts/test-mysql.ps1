@@ -7,13 +7,14 @@ $project = Split-Path $PSScriptRoot -Parent
 $fixtureParent = (New-Item -ItemType Directory -Path (Join-Path $project '.local') -Force).FullName
 $key = [guid]::NewGuid().ToString('N').Substring(0, 12)
 $fixture = (New-Item -ItemType Directory -Path (Join-Path $fixtureParent "mysql-$key")).FullName
-$data = (New-Item -ItemType Directory -Path (Join-Path $fixture 'data')).FullName
-$initSQL = Join-Path $fixture 'init.sql'
 $binary = Join-Path $fixture 'workflow.exe'
 $database = "workflow_test_$key"
 $rootPassword = [guid]::NewGuid().ToString('N')
 $appPassword = [guid]::NewGuid().ToString('N')
+$recoveryDirectory = Join-Path $fixture 'recovery'
+$recoveryRootPassword = [guid]::NewGuid().ToString('N')
 $server = $null
+$recoveryServer = $null
 $workerAPI = $null
 $console = $null
 $scanners = @()
@@ -47,33 +48,79 @@ foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_A
 
 $mysql = Join-Path $MySQLBin 'mysql.exe'
 $mysqld = Join-Path $MySQLBin 'mysqld.exe'
+$mysqldump = Join-Path $MySQLBin 'mysqldump.exe'
 $mysqladmin = Join-Path $MySQLBin 'mysqladmin.exe'
 $clientArgs = @('--no-defaults', '--protocol=TCP', '--host=127.0.0.1', "--port=$port", '--user=root')
-$serverArgs = @('--no-defaults', '--innodb-buffer-pool-size=32M', '--max-connections=48', '--mysqlx=OFF',
-    ('--basedir="{0}"' -f (Split-Path $MySQLBin -Parent)), ('--datadir="{0}"' -f $data),
-    ('--log-error="{0}/mysql.log"' -f $fixture))
 
-Push-Location -LiteralPath $project
-try {
+function Start-FixtureDatabase([string]$Directory, [int]$Port, [string]$Database, [string]$Login, [string]$Password, [string]$AdminPassword) {
+    $data = (New-Item -ItemType Directory -Path (Join-Path $Directory 'data')).FullName
+    $initSQL = Join-Path $Directory 'init.sql'
+    $serverArgs = @('--no-defaults', '--innodb-buffer-pool-size=32M', '--max-connections=48', '--mysqlx=OFF',
+        ('--basedir="{0}"' -f (Split-Path $MySQLBin -Parent)), ('--datadir="{0}"' -f $data),
+        ('--log-error="{0}/mysql.log"' -f $Directory))
     $init = Start-Process -FilePath $mysqld -ArgumentList ($serverArgs + '--initialize-insecure') -PassThru -Wait -WindowStyle Hidden
     if ($init.ExitCode -ne 0) { throw 'MySQL initialization failed' }
     @"
-ALTER USER 'root'@'localhost' IDENTIFIED BY '$rootPassword';
-CREATE DATABASE $database CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;
-CREATE USER 'workflow_test'@'127.0.0.1' IDENTIFIED BY '$appPassword';
-GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$AdminPassword';
+CREATE DATABASE $Database CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;
+CREATE USER '$Login'@'127.0.0.1' IDENTIFIED BY '$Password';
+GRANT ALL PRIVILEGES ON $Database.* TO '$Login'@'127.0.0.1';
 "@ | Set-Content -LiteralPath $initSQL -Encoding ascii
-    $server = Start-Process -FilePath $mysqld -ArgumentList ($serverArgs + @('--bind-address=127.0.0.1', "--port=$port", ('--init-file="{0}"' -f $initSQL))) -PassThru -WindowStyle Hidden
-    $env:MYSQL_PWD = $rootPassword
+    Start-Process -FilePath $mysqld -ArgumentList ($serverArgs + @('--bind-address=127.0.0.1', "--port=$Port", ('--init-file="{0}"' -f $initSQL))) -PassThru -WindowStyle Hidden
+}
+
+function Wait-FixtureDatabase([Diagnostics.Process]$Process, [string[]]$Options, [string]$Directory) {
     $version = $null
     for ($i = 0; $i -lt 40; $i++) {
-        if ($server.HasExited) { throw 'MySQL exited before accepting connections' }
-        $version = & $mysql @clientArgs '--batch' '--skip-column-names' '--execute=SELECT VERSION()' 2>$null
+        if ($Process.HasExited) { throw 'MySQL exited before accepting connections' }
+        $version = & $mysql @Options '--batch' '--skip-column-names' '--execute=SELECT VERSION()' 2>$null
         if ($LASTEXITCODE -eq 0 -and $version) { break }
         Start-Sleep -Milliseconds 250
     }
     if (!$version -or [string]$version -notmatch '^8\.4\.') { throw 'Could not connect to a MySQL 8.4 test server' }
-    Remove-Item -LiteralPath $initSQL
+    Remove-Item -LiteralPath (Join-Path $Directory 'init.sql')
+    return $version
+}
+
+function Get-FixtureChecksums([string[]]$Options, [string]$Database) {
+    $tables = & $mysql @Options "--database=$Database" '--batch' '--skip-column-names' '--execute=SHOW TABLES'
+    Assert-NativeExit 'list fixture tables'
+    if (!$tables -or ($tables | Where-Object { $_ -cnotmatch '^[a-z][a-z0-9_]*$' })) { throw 'Unexpected fixture table names' }
+    $rows = & $mysql @Options "--database=$Database" '--batch' '--skip-column-names' "--execute=CHECKSUM TABLE $($tables -join ',') EXTENDED"
+    Assert-NativeExit 'calculate fixture table checksums'
+    if ($rows.Count -ne $tables.Count -or ($rows | Where-Object { $_ -notmatch '\t\d+$' })) { throw 'Missing fixture table checksum' }
+    $rows | ForEach-Object { ($_ -split '\.', 2)[1] }
+}
+
+function Read-RecoveryEvidence([string[]]$Arguments) {
+    $response = & $binary @Arguments
+    Assert-NativeExit "read recovery evidence for $($Arguments[0])"
+    if ($Arguments[0] -eq 'run-export') {
+        $report = $response -join "`n" | ConvertFrom-Json -AsHashtable -Depth 100
+        $report.Remove('generated_at')
+        return $report | ConvertTo-Json -Depth 100 -Compress
+    }
+    return $response -join "`n"
+}
+
+function Stop-FixtureDatabase([Diagnostics.Process]$Process, [string[]]$Options, [string]$Password) {
+    if (!$Process -or $Process.HasExited) { return }
+    $env:MYSQL_PWD = $Password
+    try {
+        & $mysqladmin @Options shutdown 2>$null | Out-Null
+    } finally {
+        if (!$Process.WaitForExit(5000)) {
+            Stop-Process -Id $Process.Id
+            if (!$Process.WaitForExit(5000)) { throw 'Fixture MySQL failed to stop' }
+        }
+    }
+}
+
+Push-Location -LiteralPath $project
+try {
+    $server = Start-FixtureDatabase $fixture $port $database workflow_test $appPassword $rootPassword
+    $env:MYSQL_PWD = $rootPassword
+    $version = Wait-FixtureDatabase $server $clientArgs $fixture
     Write-Output "Isolated MySQL $version"
 
     $env:WORKFLOW_TEST_MYSQL_DSN = "workflow_test:${appPassword}@tcp(127.0.0.1:$port)/$database"
@@ -530,6 +577,75 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     if ($readBatch.state -ne 'completed' -or $historical.run.revision -ne 1 -or $historical.run.trigger_kind -ne 'backfill' -or
         !$expectedOperation -or $expectedOperation -ne $recordedOperation) { throw 'Backfill run lost its frozen version or operation key' }
     Write-Output 'CLI selected three of seven historical occurrences on revision 1, resumed in a new process, and retried without new runs.'
+
+    $recoveryReads = @(
+        @('revision', 'demo', 'dispatch-report', '1'),
+        @('revision', 'demo', 'dispatch-report', '2'),
+        @('schedule-get', 'demo', 'dispatch-report', 'hourly-dispatch'),
+        @('backfill-get', 'demo', $preview.id),
+        @('run', 'demo', $receiptIDs[0]),
+        @('run', 'demo', $created.run.id),
+        @('run', 'demo', $shipment.run.id),
+        @('queue-quota-get', 'demo', 'reports'),
+        @('run-export', 'demo', $failedRun.run.id),
+        @('run-export', 'demo', $rerun.run_id)
+    )
+    $originalEvidence = foreach ($check in $recoveryReads) { Read-RecoveryEvidence $check }
+    $sourceAccount = $clientArgs[0..3] + '--user=workflow_test'
+    $env:MYSQL_PWD = $appPassword
+    $checksums = @(Get-FixtureChecksums $sourceAccount $database)
+    $dump = Join-Path $fixture 'workflow-backup.sql'
+    $backupTimer = [Diagnostics.Stopwatch]::StartNew()
+    & $mysqldump @sourceAccount --single-transaction --quick --hex-blob --no-tablespaces --set-gtid-purged=OFF `
+        --skip-add-drop-table --skip-add-locks "--result-file=$dump" $database
+    Assert-NativeExit 'export logical MySQL backup'
+    $backupTimer.Stop()
+    $dumpHash = (Get-FileHash -LiteralPath $dump -Algorithm SHA256).Hash.ToLowerInvariant()
+    $dumpBytes = (Get-Item -LiteralPath $dump).Length
+
+    $recoveryDB = "${database}_restore"
+    $recoveryPassword = [guid]::NewGuid().ToString('N')
+    $recoveryPort = Get-LoopbackPort
+    $recoveryClientArgs = @('--no-defaults', '--protocol=TCP', '--host=127.0.0.1', "--port=$recoveryPort", '--user=root')
+    $null = New-Item -ItemType Directory -Path $recoveryDirectory
+    $recoveryServer = Start-FixtureDatabase $recoveryDirectory $recoveryPort $recoveryDB workflow_restore $recoveryPassword $recoveryRootPassword
+    $env:MYSQL_PWD = $recoveryRootPassword
+    $recoveryVersion = Wait-FixtureDatabase $recoveryServer $recoveryClientArgs $recoveryDirectory
+    $targetAccount = $recoveryClientArgs[0..3] + '--user=workflow_restore'
+    $env:MYSQL_PWD = $recoveryPassword
+    $beforeImport = & $mysql @targetAccount "--database=$recoveryDB" '--batch' '--skip-column-names' '--execute=SHOW TABLES'
+    Assert-NativeExit 'verify empty restore database'
+    if ($beforeImport) { throw 'The recovery database is not empty' }
+    $restoreTimer = [Diagnostics.Stopwatch]::StartNew()
+    $import = Start-Process -FilePath $mysql -ArgumentList ($targetAccount + @('--binary-mode', "--database=$recoveryDB")) `
+        -RedirectStandardInput $dump -PassThru -Wait -WindowStyle Hidden
+    $restoreTimer.Stop()
+    if ($import.ExitCode -ne 0) { throw "MySQL backup import failed with code $($import.ExitCode)" }
+    $restoredChecksums = @(Get-FixtureChecksums $targetAccount $recoveryDB)
+    if (($checksums -join "`n") -cne ($restoredChecksums -join "`n")) { throw 'Restored fixture table checksums differ' }
+
+    $env:WORKFLOW_MYSQL_DSN = "workflow_restore:${recoveryPassword}@tcp(127.0.0.1:$recoveryPort)/$recoveryDB"
+    $restoredVersion = & $binary migrate | ConvertFrom-Json
+    Assert-NativeExit 'verify restored schema version'
+    if ($restoredVersion.schema_version -ne $migration.schema_version) { throw 'Restored schema history differs' }
+    for ($index = 0; $index -lt $recoveryReads.Count; $index++) {
+        if ((Read-RecoveryEvidence $recoveryReads[$index]) -cne $originalEvidence[$index]) {
+            throw "Restored read differs for $($recoveryReads[$index] -join ' ')"
+        }
+    }
+    $restoredReplay = & $binary trigger demo dispatch-report demo-001 examples/diamond-inputs.json | ConvertFrom-Json
+    Assert-NativeExit 'replay a restored trigger'
+    $restoredRerun = & $binary run-rerun demo $failedRun.run.id inspect-failure extract | ConvertFrom-Json
+    Assert-NativeExit 'replay a restored rerun'
+    $restoredWrite = & $binary trigger --revision 1 demo dispatch-report restore-smoke examples/diamond-inputs.json | ConvertFrom-Json
+    Assert-NativeExit 'write a fresh run to the restored database'
+    if (!$restoredReplay.replayed -or $restoredReplay.run.id -ne $created.run.id -or
+        !$restoredRerun.replayed -or $restoredRerun.run_id -ne $rerun.run_id -or $restoredWrite.replayed -or
+        $restoredWrite.run.id -le ($receiptIDs | Measure-Object -Maximum).Maximum -or $restoredWrite.run.revision -ne 1) {
+        throw 'Restore lost request deduplication or could not allocate a new run'
+    }
+    Write-Output "MySQL $recoveryVersion backup and restore matched $($checksums.Count) table checksums and $($recoveryReads.Count) CLI reads."
+    Write-Output "Backup bytes=$dumpBytes sha256=$dumpHash dump_ms=$($backupTimer.ElapsedMilliseconds) import_ms=$($restoreTimer.ElapsedMilliseconds). Replayed trigger and rerun retained their IDs; a new run was registered."
     $passed = $true
 } finally {
     try {
@@ -547,18 +663,12 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
                 $null = $scanner.WaitForExit(5000)
             }
         }
-        if ($server -and !$server.HasExited) {
-            $env:MYSQL_PWD = $rootPassword
-            try {
-                & $mysqladmin @clientArgs shutdown 2>$null
-            } finally {
-                if (!$server.WaitForExit(5000)) {
-                    Stop-Process -Id $server.Id
-                    if (!$server.WaitForExit(5000)) { throw 'Fixture MySQL failed to stop' }
-                }
-            }
+        Stop-FixtureDatabase $recoveryServer $recoveryClientArgs $recoveryRootPassword
+        Stop-FixtureDatabase $server $clientArgs $rootPassword
+        foreach ($directory in @($fixture, $recoveryDirectory)) {
+            $initSQL = Join-Path $directory 'init.sql'
+            if (Test-Path -LiteralPath $initSQL) { Remove-Item -LiteralPath $initSQL }
         }
-        if (Test-Path -LiteralPath $initSQL) { Remove-Item -LiteralPath $initSQL }
         if ($passed) {
             $resolved = (Resolve-Path -LiteralPath $fixture).Path
             if ((Split-Path $resolved -Parent) -ne $fixtureParent -or (Split-Path $resolved -Leaf) -ne "mysql-$key") {
