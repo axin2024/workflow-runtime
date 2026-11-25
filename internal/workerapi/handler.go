@@ -21,6 +21,7 @@ type Backend interface {
 	Claim(context.Context, string, store.ClaimRequest) (*store.ClaimedTask, error)
 	Renew(context.Context, string, store.RenewRequest) (store.LeaseRenewal, error)
 	Complete(context.Context, string, store.CompletionRequest) (store.CompletionReceipt, error)
+	AcknowledgeCancel(context.Context, string, store.LeaseRef) (store.CompletionReceipt, error)
 }
 
 type claimResponse struct {
@@ -43,6 +44,7 @@ func Handler(backend Backend, logger *log.Logger) http.Handler {
 	}))
 	mux.HandleFunc("POST "+prefix+"renew", operation(logger, backend.Renew))
 	mux.HandleFunc("POST "+prefix+"complete", operation(logger, backend.Complete))
+	mux.HandleFunc("POST "+prefix+"cancel-ack", operation(logger, backend.AcknowledgeCancel))
 	return mux
 }
 
@@ -76,6 +78,10 @@ func operation[Request, Result any](logger *log.Logger, invoke func(context.Cont
 			writeFailure(w, http.StatusConflict, "lease_lost", err)
 		case errors.Is(err, store.ErrCompletionConflict):
 			writeFailure(w, http.StatusConflict, "completion_conflict", err)
+		case errors.Is(err, store.ErrCancellationRequested):
+			writeFailure(w, http.StatusConflict, "cancel_requested", err)
+		case errors.Is(err, store.ErrRunControlConflict):
+			writeFailure(w, http.StatusConflict, "run_conflict", err)
 		default:
 			logger.Printf("%s: %v", r.URL.Path, err)
 			writeFailure(w, http.StatusInternalServerError, "internal_error", errors.New("worker operation could not be completed"))

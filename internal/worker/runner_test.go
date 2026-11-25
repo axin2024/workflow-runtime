@@ -16,6 +16,7 @@ type testAPI struct {
 	claim    func(store.ClaimRequest) (*store.ClaimedTask, error)
 	renew    func(store.RenewRequest) (store.LeaseRenewal, error)
 	complete func(store.CompletionRequest) (store.CompletionReceipt, error)
+	ack      func(store.LeaseRef) (store.CompletionReceipt, error)
 }
 
 func (f testAPI) Claim(_ context.Context, request store.ClaimRequest) (*store.ClaimedTask, error) {
@@ -30,6 +31,9 @@ func (f testAPI) Complete(_ context.Context, request store.CompletionRequest) (s
 	return f.complete(request)
 }
 
+func (f testAPI) AcknowledgeCancel(_ context.Context, ref store.LeaseRef) (store.CompletionReceipt, error) {
+	return f.ack(ref)
+}
 func TestRunnerRenewsAndResendsCompletion(t *testing.T) {
 	ref := store.LeaseRef{RunID: 10, Node: "send", Epoch: 1, OperationKey: strings.Repeat("a", 64)}
 	renewed := make(chan struct{}, 1)
@@ -104,5 +108,42 @@ func TestRunnerInterruptsHandlerOnLostLease(t *testing.T) {
 	}
 	if receipt, err := runner.RunOne(t.Context()); receipt != nil || !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("lease loss: %+v, %v", receipt, err)
+	}
+}
+
+func TestRunnerAcknowledgesCancellationAfterHandlerStops(t *testing.T) {
+	ref := store.LeaseRef{RunID: 10, Node: "wait", Epoch: 1, OperationKey: strings.Repeat("a", 64)}
+	stopped := false
+	api := testAPI{
+		claim: func(store.ClaimRequest) (*store.ClaimedTask, error) {
+			now := time.Now()
+			return &store.ClaimedTask{LeaseRef: ref, Task: "wait", ClaimedAt: now,
+				LeaseUntil: now.Add(time.Second), Deadline: now.Add(3 * time.Second)}, nil
+		},
+		renew: func(store.RenewRequest) (store.LeaseRenewal, error) {
+			deadline := time.Now().Add(time.Second)
+			return store.LeaseRenewal{CancelDeadline: &deadline}, nil
+		},
+		complete: func(store.CompletionRequest) (store.CompletionReceipt, error) {
+			t.Fatal("regular completion submitted after cancellation")
+			return store.CompletionReceipt{}, nil
+		},
+		ack: func(lease store.LeaseRef) (store.CompletionReceipt, error) {
+			if !stopped || lease != ref {
+				t.Fatalf("unexpected acknowledgement before handler stop: %+v", lease)
+			}
+			return store.CompletionReceipt{LeaseRef: lease, State: workflow.NodeCanceled}, nil
+		},
+	}
+	runner, err := New(api, map[string]Handler{"wait": func(ctx context.Context, _ store.ClaimedTask) Result {
+		<-ctx.Done()
+		stopped = true
+		return Result{FailureCode: "interrupted"}
+	}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt, err := runner.RunOne(t.Context()); err != nil || receipt == nil || receipt.State != workflow.NodeCanceled {
+		t.Fatalf("cancellation acknowledgement: %+v, %v", receipt, err)
 	}
 }

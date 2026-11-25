@@ -54,27 +54,29 @@ type TriggerResult struct {
 }
 
 type NodeRun struct {
-	Key          string             `json:"key"`
-	Task         string             `json:"task"`
-	Queue        string             `json:"queue"`
-	OperationKey string             `json:"operation_key"`
-	State        string             `json:"state"`
-	AvailableAt  *time.Time         `json:"available_at,omitempty"`
-	FinishedAt   *time.Time         `json:"finished_at,omitempty"`
-	LeaseEpoch   uint64             `json:"lease_epoch"`
-	LeaseUntil   *time.Time         `json:"lease_until,omitempty"`
-	Branch       *string            `json:"branch,omitempty"`
-	Outputs      json.RawMessage    `json:"outputs,omitempty"`
-	OutputDigest *string            `json:"output_digest,omitempty"`
-	FailureCode  *string            `json:"failure_code,omitempty"`
-	Dependencies []DependencyResult `json:"dependencies,omitempty"`
-	Attempts     []AttemptResult    `json:"attempts,omitempty"`
+	Key          string              `json:"key"`
+	Task         string              `json:"task"`
+	Queue        string              `json:"queue"`
+	OperationKey string              `json:"operation_key"`
+	State        string              `json:"state"`
+	AvailableAt  *time.Time          `json:"available_at,omitempty"`
+	FinishedAt   *time.Time          `json:"finished_at,omitempty"`
+	LeaseEpoch   uint64              `json:"lease_epoch"`
+	LeaseUntil   *time.Time          `json:"lease_until,omitempty"`
+	Branch       *string             `json:"branch,omitempty"`
+	Outputs      json.RawMessage     `json:"outputs,omitempty"`
+	OutputDigest *string             `json:"output_digest,omitempty"`
+	FailureCode  *string             `json:"failure_code,omitempty"`
+	Dependencies []DependencyResult  `json:"dependencies,omitempty"`
+	Attempts     []AttemptResult     `json:"attempts,omitempty"`
+	Resolution   *ExternalResolution `json:"external_resolution,omitempty"`
 }
 
 type RunDetail struct {
-	Run     Run       `json:"run"`
-	Version Version   `json:"version"`
-	Nodes   []NodeRun `json:"nodes"`
+	Run          Run           `json:"run"`
+	Version      Version       `json:"version"`
+	Nodes        []NodeRun     `json:"nodes"`
+	Cancellation *Cancellation `json:"cancellation,omitempty"`
 }
 
 // Trigger installs the run and all its initial nodes in one transaction. Looking
@@ -190,8 +192,12 @@ func (s *Store) GetRun(ctx context.Context, scope Scope, id int64) (RunDetail, e
 	if err := attachExecutionDetails(ctx, tx, id, version.Graph.Definition, nodes); err != nil {
 		return RunDetail{}, err
 	}
+	cancellation, err := loadCancellation(ctx, tx, id)
+	if err != nil {
+		return RunDetail{}, err
+	}
 	run.Workspace, run.DAG = scope.Workspace, version.Graph.Definition.Key
-	return RunDetail{Run: run, Version: version, Nodes: nodes}, tx.Commit()
+	return RunDetail{Run: run, Version: version, Nodes: nodes, Cancellation: cancellation}, tx.Commit()
 }
 
 const runColumns = `id, dag_id, schedule_id, revision, trigger_key, trigger_kind, logical_at,

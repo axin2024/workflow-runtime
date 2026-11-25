@@ -23,8 +23,9 @@ type RenewRequest struct {
 }
 
 type LeaseRenewal struct {
-	RenewedAt  time.Time `json:"renewed_at"`
-	LeaseUntil time.Time `json:"lease_until"`
+	RenewedAt      time.Time  `json:"renewed_at"`
+	LeaseUntil     time.Time  `json:"lease_until"`
+	CancelDeadline *time.Time `json:"cancel_deadline,omitempty"`
 }
 
 type CompletionRequest struct {
@@ -61,6 +62,13 @@ func (s *Store) Renew(ctx context.Context, token string, request RenewRequest) (
 	}
 	if !liveLease(task, worker.id, now) {
 		return LeaseRenewal{}, ErrLeaseLost
+	}
+	if run.State == "canceling" {
+		cancel, err := loadCancellation(ctx, tx, run.ID)
+		if err != nil {
+			return LeaseRenewal{}, err
+		}
+		return LeaseRenewal{RenewedAt: now, LeaseUntil: *task.leaseUntil, CancelDeadline: &cancel.Deadline}, nil
 	}
 	until := now.Add(time.Duration(request.LeaseSeconds) * time.Second)
 	if task.leaseUntil.After(until) {
@@ -104,6 +112,9 @@ func (s *Store) Complete(ctx context.Context, token string, request CompletionRe
 	}
 	if !liveLease(task, worker.id, now) {
 		return CompletionReceipt{}, ErrLeaseLost
+	}
+	if run.State == "canceling" {
+		return CompletionReceipt{}, ErrCancellationRequested
 	}
 	version, err := loadVersion(ctx, tx, dag, run.Revision)
 	if err != nil {

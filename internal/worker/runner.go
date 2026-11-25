@@ -32,6 +32,7 @@ type API interface {
 	Claim(context.Context, store.ClaimRequest) (*store.ClaimedTask, error)
 	Renew(context.Context, store.RenewRequest) (store.LeaseRenewal, error)
 	Complete(context.Context, store.CompletionRequest) (store.CompletionReceipt, error)
+	AcknowledgeCancel(context.Context, store.LeaseRef) (store.CompletionReceipt, error)
 }
 
 func New(api API, handlers map[string]Handler, leaseSeconds int) (*Runner, error) {
@@ -70,7 +71,7 @@ func (r *Runner) RunOne(ctx context.Context) (*store.CompletionReceipt, error) {
 	defer cancel()
 	heartbeat := make(chan error, 1)
 	go func() {
-		err := r.keepLease(runCtx, task.LeaseRef, leaseUntil, task.Deadline)
+		err := r.keepLease(runCtx, task.LeaseRef, leaseUntil)
 		if err != nil {
 			cancel()
 		}
@@ -91,19 +92,31 @@ func (r *Runner) RunOne(ctx context.Context) (*store.CompletionReceipt, error) {
 		}
 	}
 	cancel()
-	if heartbeatErr := <-heartbeat; err != nil {
+	heartbeatErr := <-heartbeat
+	if err != nil {
+		if ctx.Err() == nil && (errors.Is(err, store.ErrCancellationRequested) || errors.Is(heartbeatErr, store.ErrCancellationRequested)) {
+			receipt, err := r.api.AcknowledgeCancel(ctx, task.LeaseRef)
+			if errors.Is(err, workerapi.ErrTemporary) && ctx.Err() == nil {
+				receipt, err = r.api.AcknowledgeCancel(ctx, task.LeaseRef)
+			}
+			if err == nil {
+				return &receipt, nil
+			}
+			return nil, err
+		}
 		return nil, errors.Join(err, heartbeatErr)
 	}
 	return &receipt, nil
 }
 
-func (r *Runner) keepLease(ctx context.Context, ref store.LeaseRef, until, serverDeadline time.Time) error {
+func (r *Runner) keepLease(ctx context.Context, ref store.LeaseRef, until time.Time) error {
+	interval := min(2*time.Second, time.Duration(r.leaseSeconds)*time.Second/3)
 	for ctx.Err() == nil {
 		remaining := time.Until(until)
 		if remaining <= 0 {
 			return store.ErrLeaseLost
 		}
-		timer := time.NewTimer(remaining / 3)
+		timer := time.NewTimer(min(remaining, interval))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -111,6 +124,9 @@ func (r *Runner) keepLease(ctx context.Context, ref store.LeaseRef, until, serve
 		case <-timer.C:
 		}
 		started := time.Now()
+		if !started.Before(until) {
+			return store.ErrLeaseLost
+		}
 		renewCtx, cancel := context.WithDeadline(ctx, until)
 		result, err := r.api.Renew(renewCtx, store.RenewRequest{Lease: ref, LeaseSeconds: r.leaseSeconds})
 		cancel()
@@ -120,18 +136,10 @@ func (r *Runner) keepLease(ctx context.Context, ref store.LeaseRef, until, serve
 			}
 			return err
 		}
-		until = started.Add(result.LeaseUntil.Sub(result.RenewedAt))
-		if !result.LeaseUntil.Before(serverDeadline) {
-			// The task deadline capped the lease. Further renewal cannot extend it.
-			timer := time.NewTimer(time.Until(until))
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-timer.C:
-				return store.ErrLeaseLost
-			}
+		if result.CancelDeadline != nil {
+			return store.ErrCancellationRequested
 		}
+		until = started.Add(result.LeaseUntil.Sub(result.RenewedAt))
 	}
 	return nil
 }

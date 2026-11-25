@@ -84,12 +84,18 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		if len(args) != 3 {
 			return errors.New("usage: workflow run WORKSPACE ID")
 		}
-		id, err := strconv.ParseInt(args[2], 10, 64)
-		if err != nil || id <= 0 {
-			return errors.New("run ID must be a positive integer")
+		id, err := positiveRunID(args[2])
+		if err != nil {
+			return err
 		}
 		operation = func(db *store.Store) (any, error) {
 			return db.GetRun(ctx, scope, id)
+		}
+	case "run-cancel", "run-resolve", "execution-sweep":
+		var err error
+		operation, err = prepareRunControl(ctx, scope, args)
+		if err != nil {
+			return err
 		}
 	case "schedule-put":
 		if len(args) != 5 {

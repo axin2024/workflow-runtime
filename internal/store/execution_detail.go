@@ -82,5 +82,20 @@ func attachExecutionDetails(ctx context.Context, tx *sql.Tx, runID int64, graph 
 		}
 		byKey[key].Attempts = append(byKey[key].Attempts, value)
 	}
-	return attempts.Err()
+	if err := attempts.Err(); err != nil {
+		return err
+	}
+	resolutions, err := tx.QueryContext(ctx, resolutionsQuery, runID)
+	if err != nil {
+		return err
+	}
+	defer resolutions.Close()
+	for resolutions.Next() {
+		record, _, err := readResolution(resolutions, runID)
+		if err != nil {
+			return err
+		}
+		byKey[record.Node].Resolution = &record
+	}
+	return resolutions.Err()
 }

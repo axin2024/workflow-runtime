@@ -2,7 +2,7 @@
 
 Workflow Runtime 是一个基于 Go 和 MySQL 的自托管工作流编排平台。工作流用 DAG 描述任务、依赖、输入输出和失败处理。每次运行绑定发布时确定的图版本和输入。
 
-当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、按时刻选择补跑、Worker 执行，以及按工作空间查询运行历史。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
+当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、按时刻选择补跑、Worker 执行、运行取消和外部任务核对。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
 
 ## 校验工作流
 
@@ -60,6 +60,8 @@ go run ./cmd/workflow scheduler --interval 5s
 
 计划用五字段 Cron 和 IANA 时区定义，`start_after` 是首次匹配的排除边界。春季拨快时，未出现的本地时刻会跳过。秋季回拨时，同一壁钟时间按两个 UTC 时刻分别登记。计划的运行、首批节点和游标在同一事务提交，多台调度器可连接同一数据库。
 
+常驻调度器还清理已过期的 Worker 租约和等待超时的取消请求。维护时可运行 `workflow execution-sweep` 单独处理一次。人工取消、核对和证据字段参见 [运行控制](docs/run-control.md)。
+
 - `catch_up` 按计划顺序补齐错过的时刻。达到 `max_active_runs` 时保留游标，等待运行释放名额。
 - `skip` 跳过宽限期之前的时刻，审计记录保留跳过的时间窗。`grace_seconds` 应覆盖预期的扫描周期。
 - 计划默认在登记运行时使用活动版本，也可设置 `revision` 固定版本。活动版本的输入契约变化时，游标和错误信息会保留。更新输入或固定到兼容版本即可继续。
@@ -82,4 +84,4 @@ go run ./cmd/workflow backfill-resume demo 1
 
 ## MySQL 集成测试
 
-Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、v2 发布后的 v1 运行回读、跨工作空间隔离、冲突审计、两台调度器并发扫描、暂停恢复、历史窗口七选三、租约失效接管、并行分支汇合、失败清理和外部任务失联。脚本还用两个 Worker 身份经 HTTP 执行示例并回读 MySQL。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
+Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、历史版本、跨工作空间隔离、冲突审计、调度与补跑、租约失效接管、并行分支汇合、失败清理、取消和外部任务核对。脚本还用两个 Worker 身份经 HTTP 执行示例并回读 MySQL。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。

@@ -72,13 +72,23 @@ func runScheduler(ctx context.Context, args []string, dsn, actor string, out, di
 	encoder := json.NewEncoder(out)
 	for {
 		attempt, cancel := context.WithTimeout(ctx, 30*time.Second)
-		result, err := db.ScanDue(attempt, actor, now, *limit)
+		var sweep store.SweepResult
+		var sweepErr error
+		if now.IsZero() {
+			sweep, sweepErr = db.SweepExecution(attempt, *limit)
+		}
+		result, scanErr := db.ScanDue(attempt, actor, now, *limit)
 		cancel()
+		err := errors.Join(sweepErr, scanErr)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if (*once || len(result.Outcomes) > 0) && !result.At.IsZero() {
-			if writeErr := encoder.Encode(result); writeErr != nil {
+		if (*once || len(result.Outcomes) > 0 || sweep.Expired > 0 || sweep.CancelTimedOut > 0) && !result.At.IsZero() {
+			output := struct {
+				store.ScheduleScan
+				Execution store.SweepResult `json:"execution"`
+			}{result, sweep}
+			if writeErr := encoder.Encode(output); writeErr != nil {
 				return writeErr
 			}
 		}

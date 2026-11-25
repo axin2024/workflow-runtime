@@ -60,6 +60,12 @@ func (c *Client) Complete(ctx context.Context, request store.CompletionRequest) 
 	return result, err
 }
 
+func (c *Client) AcknowledgeCancel(ctx context.Context, ref store.LeaseRef) (store.CompletionReceipt, error) {
+	var result store.CompletionReceipt
+	err := c.post(ctx, "cancel-ack", ref, &result)
+	return result, err
+}
+
 var ErrTemporary = errors.New("worker API temporarily unavailable")
 
 func (c *Client) post(ctx context.Context, resource string, value, result any) error {
@@ -94,6 +100,10 @@ func (c *Client) post(ctx context.Context, resource string, value, result any) e
 			return store.ErrLeaseLost
 		case "completion_conflict":
 			return store.ErrCompletionConflict
+		case "cancel_requested":
+			return store.ErrCancellationRequested
+		case "run_conflict":
+			return store.ErrRunControlConflict
 		case "invalid_request":
 			return fmt.Errorf("%w: %s", store.ErrInvalidWorkerRequest, problem.Message)
 		default:

@@ -174,6 +174,52 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     }
     Write-Output 'Token-only workers executed four diamond nodes through HTTP. The result and skipped branch were read from MySQL.'
 
+    $externalGraph = Join-Path $fixture 'external-action.json'
+    [IO.File]::WriteAllText($externalGraph, @'
+{"key":"external-action","nodes":[
+  {"key":"ship","task":"ship","queue":"shipping","effect":"external","timeout_seconds":60,"retry":{"max_attempts":1}},
+  {"key":"notify","task":"notify","queue":"shipping","effect":"none","timeout_seconds":30,"retry":{"max_attempts":1},
+   "depends_on":[{"node":"ship","when":"finished"}]}]}
+'@)
+    $emptyInputs = Join-Path $fixture 'empty-inputs.json'
+    [IO.File]::WriteAllText($emptyInputs, '{}')
+    & $binary publish demo 0 $externalGraph | Out-Null
+    Assert-NativeExit 'publish external action'
+    $shipment = & $binary trigger demo external-action external-001 $emptyInputs | ConvertFrom-Json
+    Assert-NativeExit 'trigger external action'
+    $courier = & $binary worker-register demo courier 1 shipping:ship shipping:notify | ConvertFrom-Json
+    Assert-NativeExit 'register external worker'
+    $courierHeaders = @{ Authorization = "Bearer $($courier.token)" }
+    $externalClaim = Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/claim" -ContentType 'application/json' -Headers $courierHeaders `
+        -Body '{"tasks":["ship"],"lease_seconds":30}'
+    if ($externalClaim.task.run_id -ne $shipment.run.id) { throw 'Wrong external claim' }
+    $taskLease = @{
+        run_id = $externalClaim.task.run_id; node = $externalClaim.task.node
+        epoch = $externalClaim.task.epoch; operation_key = $externalClaim.task.operation_key
+    }
+    $stop = & $binary run-cancel demo $shipment.run.id shipping-incident 'Wrong destination' | ConvertFrom-Json
+    Assert-NativeExit 'request cancellation'
+    $renewBody = @{ lease = $taskLease; lease_seconds = 30 } | ConvertTo-Json -Compress
+    $renewal = Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/renew" -ContentType 'application/json' -Headers $courierHeaders -Body $renewBody
+    if (!$renewal.cancel_deadline -or $renewal.cancel_deadline -ne $stop.deadline) { throw 'Worker API did not signal cancellation' }
+    $stopReceipt = Invoke-RestMethod -Method Post -Uri "$apiOrigin/v1/worker/cancel-ack" -ContentType 'application/json' -Headers $courierHeaders `
+        -Body ($taskLease | ConvertTo-Json -Compress)
+    if ($stopReceipt.state -ne 'action_required') { throw 'External action did not await reconciliation' }
+    $externalResult = Join-Path $fixture 'reconciliation.json'
+    [IO.File]::WriteAllText($externalResult, (@{
+        request_key = 'carrier-9020'; epoch = $taskLease.epoch; evidence = 'Carrier receipt 9020'; state = 'succeeded'
+    } | ConvertTo-Json))
+    $resolution = & $binary run-resolve demo $shipment.run.id ship $externalResult | ConvertFrom-Json
+    Assert-NativeExit 'reconcile external action'
+    $closed = & $binary run demo $shipment.run.id | ConvertFrom-Json
+    Assert-NativeExit 'read cancellation evidence'
+    if ($resolution.operation_key -ne $taskLease.operation_key -or $closed.run.state -ne 'canceled' -or !$closed.cancellation.finished_at -or
+        ($closed.nodes | Where-Object key -eq ship).external_resolution.evidence -ne 'Carrier receipt 9020' -or
+        ($closed.nodes | Where-Object key -eq notify).state -ne 'canceled') {
+        throw 'Cancellation or reconciliation evidence was lost'
+    }
+    Write-Output 'CLI canceled a live external action, obtained the HTTP worker acknowledgement, and recorded reconciliation without releasing downstream.'
+
     $schedule = & $binary schedule-put demo dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
     Assert-NativeExit 'CLI save schedule'
     $scanArguments = @('scheduler', '--once', '--at', '2026-11-01T03:00:00+08:00')
