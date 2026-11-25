@@ -1,28 +1,47 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"time"
 
 	"github.com/axin2024/workflow-runtime/internal/workflow"
 )
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, out io.Writer) error {
+const usage = `Usage:
+  workflow validate DEFINITION.json [INPUTS.json]
+  workflow migrate
+  workflow workspace-create WORKSPACE
+  workflow publish WORKSPACE EXPECTED_REVISION DEFINITION.json
+  workflow revision WORKSPACE DAG [REVISION]
+  workflow trigger [--kind manual|external] [--revision N] [--logical-at RFC3339] WORKSPACE DAG KEY INPUTS.json
+  workflow run WORKSPACE ID`
+
+func run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {
-		_, err := fmt.Fprintln(out, "Usage: workflow validate DEFINITION.json [INPUTS.json]")
+		_, err := fmt.Fprintln(out, usage)
 		return err
 	}
-	if args[0] != "validate" || len(args) < 2 || len(args) > 3 {
+	if args[0] != "validate" {
+		return runDatabaseCommand(ctx, args, out)
+	}
+	if len(args) < 2 || len(args) > 3 {
 		return errors.New("usage: workflow validate DEFINITION.json [INPUTS.json]")
 	}
 	data, err := readSample(args[1])
@@ -46,9 +65,13 @@ func run(args []string, out io.Writer) error {
 			return err
 		}
 	}
+	return writeJSON(out, compiled)
+}
+
+func writeJSON(out io.Writer, value any) error {
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(compiled)
+	return encoder.Encode(value)
 }
 
 func readSample(path string) ([]byte, error) {
