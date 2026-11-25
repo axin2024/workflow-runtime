@@ -34,6 +34,18 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		scope.Workspace = args[1]
 	}
 	switch args[0] {
+	case "callback-status":
+		if len(args) != 5 {
+			return errors.New("usage: workflow callback-status WORKSPACE DAG ACTOR RUN_ID")
+		}
+		id, err := positiveRunID(args[4])
+		if err != nil {
+			return err
+		}
+		scope.Actor = args[3]
+		operation = func(db *store.Store) (any, error) {
+			return db.GetCallbackStatus(ctx, scope, args[2], id)
+		}
 	case "trigger-grant", "trigger-revoke":
 		if len(args) != 4 {
 			return errors.New("usage: workflow trigger-grant|trigger-revoke WORKSPACE DAG ACTOR")

@@ -29,7 +29,12 @@ func main() {
 }
 
 func longRunningCommand(name string) bool {
-	return name == "scheduler" || name == "worker-api" || name == "worker" || name == "console" || name == "demo-worker"
+	switch name {
+	case "scheduler", "worker-api", "worker", "console", "demo-worker", "callback-dispatch":
+		return true
+	default:
+		return false
+	}
 }
 
 const usage = `Usage:
@@ -43,6 +48,8 @@ const usage = `Usage:
   workflow trigger [--kind manual|external] [--revision N] [--logical-at RFC3339] WORKSPACE DAG KEY INPUTS.json
   workflow trigger-grant WORKSPACE DAG ACTOR
   workflow trigger-revoke WORKSPACE DAG ACTOR
+  workflow callback-dispatch [--once] [--interval DURATION] WORKSPACE DAG ACTOR
+  workflow callback-status WORKSPACE DAG ACTOR RUN_ID
   workflow run WORKSPACE ID
   workflow run-cancel [--grace-seconds N] WORKSPACE ID KEY REASON
   workflow run-rerun-preview WORKSPACE ID NODE[,NODE...]
@@ -84,6 +91,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runWorker(ctx, args[1:], out, os.Stderr)
 	case "worker-api":
 		return runWorkerAPI(ctx, args[1:])
+	case "callback-dispatch":
+		return runCallbackDispatch(ctx, args[1:], out)
 	case "console":
 		return runConsole(ctx, args[1:])
 	case "validate":

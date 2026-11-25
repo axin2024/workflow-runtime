@@ -17,7 +17,7 @@
 | AC-11 | 去重能力未知的外部动作保持待人工核对，原操作号和处置证据留在报告。 | `TestMySQLWorkersBackOffAndQuarantineExternalExpiry`、`TestMySQLCanceledExternalActionPreservesUncertaintyUntilResolved`、Windows 集成脚本 |
 | AC-12 | 发布新版后仍可发起旧版部分重跑，核查旧版号、输入摘要和上游产物引用。 | `TestMySQLWorkersFenceExpiredLeaseAndAdvanceDiamond` |
 
-Windows HTTP 验收还覆盖不同角色与工作空间、外部触发重送和凭据轮换，以及日志到期、批量清理和审计导出。测试输出会打印样例运行号和摘要，运行号由独立测试库分配。 [集成脚本](../scripts/test-mysql.ps1)
+Windows HTTP 验收还覆盖不同角色与工作空间、外部触发重送和凭据轮换，以及日志到期、批量清理和审计导出。`TestMySQLTerminalCallbackDeliveryAndLeaseRecovery` 通过真实回环 HTTP 验签，接收方在接收时查询已提交的运行结果，依次返回 503 与 204。测试核对退避、事件编号、权限隔离、租约接管及最终确认状态。测试输出会打印样例运行号和摘要，运行号由独立测试库分配。 [集成脚本](../scripts/test-mysql.ps1)
 
 ## 本地复现
 
@@ -26,6 +26,8 @@ pwsh -File ./scripts/test-mysql.ps1 -MySQLBin 'C:/mysql/bin' -CapacityLoad
 ~~~
 
 测试前一阶段的数据升级路径时，把历史 schema 2 CLI 提供给 `-PreviousCLI`。可以从历史提交 `5595b8b` 导出源码，在独立目录执行 `go build -o workflow-schema2.exe ./cmd/workflow`。脚本核查迁移前的历史调度实例，并在迁移后的数据库上执行测试、备份与独立恢复。 [恢复与升级](recovery.md)
+
+回调队列回填可用历史提交 `ff0a372` 构建的 schema 10 CLI 作为 `-PreviousCLI`。脚本通过旧版 HTTP 接口登记一个已取消运行和一个尚未完成运行，升级后核查两者的回调状态。
 
 GitHub Actions 的 MySQL 作业验证 Go 测试与 CLI 构建。手动触发时可以启用容量测试。备份恢复、两个 Worker 进程和管理站 HTTP 检查使用上述 Windows 脚本复现。
 
@@ -43,3 +45,9 @@ GitHub Actions 的 MySQL 作业验证 Go 测试与 CLI 构建。手动触发时�
 AC-07 对应运行 `1068`、`1069`，分别使用修订 1 的整数输入与修订 2 的字符串输入，均完成。AC-09 对应运行 `1070`，第三方可在本机复现并按自己的运行编号检查日志。该用例中跳过的分支记录 `branch_not_selected`，两个汇合点分别以 `satisfied/upstream_skipped` 和 `unmet/upstream_skipped` 记录判定。
 
 同次测试从 schema 2 升级到 schema 10。接管演示在运行 `1088` 复现 Worker B 接管和旧代数拒绝。将 3,594,247 字节的逻辑备份导入独立 MySQL 实例后，28 张表校验和与 10 项 CLI 查询结果一致。原触发与部分重跑请求重送返回原编号，另一个新请求正常登记。备份导出用时 346 毫秒，恢复导入用时 2.975 秒。
+
+## Schema 11 回归
+
+开启回调队列后，从 schema 2 升级的负载测试再次完成 1,000 条工作流与 5,000 个节点。稳定阶段处理 4,750 个节点，用时 112.922 秒，吞吐 42.1 节点/秒，领取和完成的 p95 分别为 609.882 毫秒和 430.612 毫秒。活跃租约峰值仍为 20，40 次旧代数提交全部被拒。独立 MySQL 实例的恢复结果与源库的 29 张表校验和及 10 项 CLI 读回一致。
+
+另一次测试用 schema 10 CLI 创建两条外部运行。升级后，已取消的运行 `1` 获得一条尚未尝试投递的回调，未结束的运行 `2` 未进入队列。运行 `3` 的接收方依次返回 503 和 204，第二次投递沿用原事件编号。运行 `73` 的过期投递租约成功接管，旧租约无法写回结果。

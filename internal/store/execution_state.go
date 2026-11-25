@@ -211,6 +211,5 @@ func refreshRunState(ctx context.Context, tx *sql.Tx, runID int64, states map[st
 	} else if manual && !runnable {
 		state = "action_required"
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE runs SET state = ?, finished_at = ? WHERE id = ?`, state, finished, runID)
-	return err
+	return saveRunState(ctx, tx, runID, state, finished)
 }

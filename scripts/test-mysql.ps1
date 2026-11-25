@@ -289,6 +289,43 @@ function Test-ExternalTriggers([string]$Endpoint, [string]$WorkerToken) {
     Write-Output 'External trigger HTTP receipts survived replay, concurrent delivery, cancellation and credential rotation. Actor, tenant, and worker boundaries passed.'
 }
 
+function New-PreviousCallbackFixture([string]$CLI) {
+    & $CLI workspace-create upgrade | Out-Null
+    Assert-NativeExit 'create schema 10 callback workspace'
+    & $CLI publish upgrade 0 examples/diamond.json | Out-Null
+    Assert-NativeExit 'publish schema 10 callback fixture'
+    $grant = & $CLI trigger-grant upgrade dispatch-report legacy-caller | ConvertFrom-Json
+    Assert-NativeExit 'grant schema 10 external trigger'
+    $apiPort = Get-LoopbackPort
+    $origin = "http://127.0.0.1:$apiPort"
+    $oldAPI = Start-Process -FilePath $CLI -ArgumentList @('worker-api', '--listen', "127.0.0.1:$apiPort") -WindowStyle Hidden -PassThru `
+        -RedirectStandardError (Join-Path $fixture 'previous-api.log')
+    try {
+        $healthy = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if ($oldAPI.HasExited) { throw 'Schema 10 API exited before accepting connections' }
+            try {
+                if ((Invoke-WebRequest -Uri "$origin/healthz" -TimeoutSec 1).StatusCode -eq 204) { $healthy = $true; break }
+            } catch { Start-Sleep -Milliseconds 100 }
+        }
+        if (!$healthy) { throw 'Schema 10 API failed its health check' }
+        $headers = @{ Authorization = "Bearer $($grant.token)" }
+        $terminal = Invoke-RestMethod -Method Post -Uri "$origin/v1/triggers" -Headers $headers -ContentType 'application/json' `
+            -Body '{"key":"legacy-terminal","inputs":{"rows":1,"source":"upgrade-fixture"}}'
+        $pending = Invoke-RestMethod -Method Post -Uri "$origin/v1/triggers" -Headers $headers -ContentType 'application/json' `
+            -Body '{"key":"legacy-pending","inputs":{"rows":1,"source":"upgrade-fixture"}}'
+        $stopped = & $CLI run-cancel upgrade $terminal.run.id legacy-stop 'synthetic migration fixture' | ConvertFrom-Json
+        Assert-NativeExit 'settle pre-upgrade external run'
+        if (!$stopped.finished_at -or !$pending.run.id -or $terminal.run.id -eq $pending.run.id) { throw 'Invalid pre-upgrade external runs' }
+        return @{ terminal = [long]$terminal.run.id; pending = [long]$pending.run.id }
+    } finally {
+        if (!$oldAPI.HasExited) {
+            Stop-Process -Id $oldAPI.Id
+            if (!$oldAPI.WaitForExit(5000)) { throw 'Schema 10 API failed to stop' }
+        }
+    }
+}
+
 Push-Location -LiteralPath $project
 try {
     $server = Start-FixtureDatabase $fixture $port $database workflow_test $appPassword $rootPassword
@@ -299,21 +336,28 @@ try {
     $env:WORKFLOW_TEST_MYSQL_DSN = "workflow_test:${appPassword}@tcp(127.0.0.1:$port)/$database"
     $env:WORKFLOW_MYSQL_DSN = $env:WORKFLOW_TEST_MYSQL_DSN
     $env:WORKFLOW_ACTOR = 'fixture-operator'
+    $previousSchema = 0
     if ($CapacityLoad) { $env:WORKFLOW_CAPACITY_LOAD = '1' }
     if ($PreviousCLI) {
         $previousMigration = & $PreviousCLI migrate | ConvertFrom-Json
         Assert-NativeExit 'previous CLI migrate'
-        if ($previousMigration.schema_version -ne 2) { throw 'Previous CLI must use schema 2' }
-        & $PreviousCLI workspace-create upgrade | Out-Null
-        Assert-NativeExit 'previous CLI create workspace'
-        $previousGraph = & $PreviousCLI publish upgrade 0 examples/diamond.json | ConvertFrom-Json
-        Assert-NativeExit 'previous CLI publish'
-        $previousSchedule = & $PreviousCLI schedule-put upgrade dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
-        Assert-NativeExit 'previous CLI save schedule'
-        $previousScan = & $PreviousCLI scheduler --once --at '2026-11-01T01:00:00+08:00' | ConvertFrom-Json
-        Assert-NativeExit 'previous CLI create scheduled run'
-        $previousRun = @($previousScan.outcomes | Where-Object schedule_id -eq $previousSchedule.id | ForEach-Object run_ids)
-        if ($previousRun.Count -ne 1) { throw 'Expected one pre-upgrade scheduled run' }
+        $previousSchema = $previousMigration.schema_version
+        switch ($previousSchema) {
+            2 {
+                & $PreviousCLI workspace-create upgrade | Out-Null
+                Assert-NativeExit 'previous CLI create workspace'
+                $previousGraph = & $PreviousCLI publish upgrade 0 examples/diamond.json | ConvertFrom-Json
+                Assert-NativeExit 'previous CLI publish'
+                $previousSchedule = & $PreviousCLI schedule-put upgrade dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
+                Assert-NativeExit 'previous CLI save schedule'
+                $previousScan = & $PreviousCLI scheduler --once --at '2026-11-01T01:00:00+08:00' | ConvertFrom-Json
+                Assert-NativeExit 'previous CLI create scheduled run'
+                $previousRun = @($previousScan.outcomes | Where-Object schedule_id -eq $previousSchedule.id | ForEach-Object run_ids)
+                if ($previousRun.Count -ne 1) { throw 'Expected one pre-upgrade scheduled run' }
+            }
+            10 { $previousCallbacks = New-PreviousCallbackFixture $PreviousCLI }
+            default { throw 'Previous CLI must use schema 2 or 10' }
+        }
     }
     go test -count=1 -v ./...
     Assert-NativeExit 'Go tests'
@@ -329,7 +373,7 @@ try {
     $migration = & $binary migrate | ConvertFrom-Json
     Assert-NativeExit 'CLI migrate'
     if ($migration.schema_version -lt 3) { throw 'Unexpected fixture schema version' }
-    if ($PreviousCLI) {
+    if ($previousSchema -eq 2) {
         $oldRun = & $binary run upgrade $previousRun[0] | ConvertFrom-Json
         Assert-NativeExit 'read scheduled run after schema upgrade'
         $oldPreview = & $binary backfill-preview upgrade dispatch-report hourly-dispatch 1 '2026-11-01T01:00:00+08:00' '2026-11-01T03:00:00+08:00' | ConvertFrom-Json
@@ -340,6 +384,16 @@ try {
             throw 'Schema upgrade changed the existing scheduled occurrence'
         }
         Write-Output 'Schema 2 data survived the upgrade and was found as the existing backfill baseline.'
+    }
+    if ($previousSchema -eq 10) {
+        $oldCallback = & $binary callback-status upgrade dispatch-report legacy-caller $previousCallbacks.terminal | ConvertFrom-Json
+        Assert-NativeExit 'read backfilled callback after schema upgrade'
+        $pendingCount = & $mysql @clientArgs "--database=$database" '--batch' '--skip-column-names' `
+            "--execute=SELECT COUNT(*) FROM callback_deliveries WHERE run_id=$($previousCallbacks.pending)"
+        Assert-NativeExit 'check that a running upgrade fixture remains unqueued for callback'
+        if ($oldCallback.run_id -ne $previousCallbacks.terminal -or !$oldCallback.event_id -or $oldCallback.attempts -ne 0 -or
+            $oldCallback.delivered_at -or $pendingCount -ne '0') { throw 'Terminal callback backfill selected the wrong pre-upgrade runs' }
+        Write-Output "Schema 10 terminal run $($oldCallback.run_id) gained an unattempted callback. Nonterminal run $($previousCallbacks.pending) remained out of the queue."
     }
     & $binary workspace-create demo | Out-Null
     Assert-NativeExit 'CLI create workspace'

@@ -147,8 +147,7 @@ func refreshCanceledRun(ctx context.Context, tx *sql.Tx, runID int64, now time.T
 			return err
 		}
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE runs SET state = ?, finished_at = ? WHERE id = ?`, state, finished, runID)
-	return err
+	return saveRunState(ctx, tx, runID, state, finished)
 }
 
 func cancelAttempt(ctx context.Context, tx *sql.Tx, runID int64, node workflow.Node, epoch uint64, now time.Time, outcome string) (workflow.NodeState, error) {
