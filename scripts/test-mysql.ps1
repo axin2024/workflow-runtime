@@ -1,7 +1,8 @@
-param([Parameter(Mandatory)][string]$MySQLBin)
+param([Parameter(Mandatory)][string]$MySQLBin, [string]$PreviousCLI)
 
 $ErrorActionPreference = 'Stop'
 $MySQLBin = (Resolve-Path -LiteralPath $MySQLBin).Path
+if ($PreviousCLI) { $PreviousCLI = (Resolve-Path -LiteralPath $PreviousCLI).Path }
 $project = Split-Path $PSScriptRoot -Parent
 $fixtureParent = (New-Item -ItemType Directory -Path (Join-Path $project '.local') -Force).FullName
 $key = [guid]::NewGuid().ToString('N').Substring(0, 12)
@@ -67,6 +68,21 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     $env:WORKFLOW_TEST_MYSQL_DSN = "workflow_test:${appPassword}@tcp(127.0.0.1:$port)/$database"
     $env:WORKFLOW_MYSQL_DSN = $env:WORKFLOW_TEST_MYSQL_DSN
     $env:WORKFLOW_ACTOR = 'fixture-operator'
+    if ($PreviousCLI) {
+        $previousMigration = & $PreviousCLI migrate | ConvertFrom-Json
+        Assert-NativeExit 'previous CLI migrate'
+        if ($previousMigration.schema_version -ne 2) { throw 'Previous CLI must use schema 2' }
+        & $PreviousCLI workspace-create upgrade | Out-Null
+        Assert-NativeExit 'previous CLI create workspace'
+        $previousGraph = & $PreviousCLI publish upgrade 0 examples/diamond.json | ConvertFrom-Json
+        Assert-NativeExit 'previous CLI publish'
+        $previousSchedule = & $PreviousCLI schedule-put upgrade dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
+        Assert-NativeExit 'previous CLI save schedule'
+        $previousScan = & $PreviousCLI scheduler --once --at '2026-11-01T01:00:00+08:00' | ConvertFrom-Json
+        Assert-NativeExit 'previous CLI create scheduled run'
+        $previousRun = @($previousScan.outcomes | Where-Object schedule_id -eq $previousSchedule.id | ForEach-Object run_ids)
+        if ($previousRun.Count -ne 1) { throw 'Expected one pre-upgrade scheduled run' }
+    }
     go test -count=1 -v ./...
     Assert-NativeExit 'Go tests'
     go vet ./...
@@ -76,7 +92,19 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
 
     $migration = & $binary migrate | ConvertFrom-Json
     Assert-NativeExit 'CLI migrate'
-    if ($migration.schema_version -lt 2) { throw 'Unexpected fixture schema version' }
+    if ($migration.schema_version -lt 3) { throw 'Unexpected fixture schema version' }
+    if ($PreviousCLI) {
+        $oldRun = & $binary run upgrade $previousRun[0] | ConvertFrom-Json
+        Assert-NativeExit 'read scheduled run after schema upgrade'
+        $oldPreview = & $binary backfill-preview upgrade dispatch-report hourly-dispatch 1 '2026-11-01T01:00:00+08:00' '2026-11-01T03:00:00+08:00' | ConvertFrom-Json
+        Assert-NativeExit 'preview pre-upgrade occurrence'
+        if ($oldRun.run.id -ne $previousRun[0] -or $oldRun.run.trigger_kind -ne 'scheduled' -or
+            $oldRun.version.graph.digest -ne $previousGraph.graph.digest -or $oldPreview.items.Count -ne 3 -or
+            $oldPreview.items[0].state -ne 'already_registered' -or $oldPreview.items[0].baseline_run_id -ne $previousRun[0]) {
+            throw 'Schema upgrade changed the existing scheduled occurrence'
+        }
+        Write-Output 'Schema 2 data survived the upgrade and was found as the existing backfill baseline.'
+    }
     & $binary workspace-create demo | Out-Null
     Assert-NativeExit 'CLI create workspace'
     $graph = & $binary publish demo 0 examples/diamond.json | ConvertFrom-Json
@@ -120,6 +148,55 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
         throw 'The schedule cursor did not advance'
     }
     Write-Output 'Two scheduler CLI processes created exactly three distinct catch-up runs.'
+
+    $backfillScheduleFile = Join-Path $fixture 'backfill-schedule.json'
+    $backfillSchedule = @{
+        key = 'selective-dispatch'; cron = '0 * * * *'; timezone = 'Asia/Shanghai'; misfire = 'catch_up'
+        max_active_runs = 2; enabled = $false; start_after = '2025-03-01T00:00:00+08:00'
+        inputs = @{ rows = 12; source = 'synthetic-harbor-shifts' }
+    } | ConvertTo-Json -Depth 6
+    [IO.File]::WriteAllText($backfillScheduleFile, $backfillSchedule)
+    & $binary schedule-put demo dispatch-report 0 $backfillScheduleFile | Out-Null
+    Assert-NativeExit 'CLI save backfill schedule'
+    $nextDefinition = Get-Content -Raw -LiteralPath (Join-Path $project 'examples/diamond.json') | ConvertFrom-Json
+    $nextDefinition.inputs | Add-Member -NotePropertyName batch -NotePropertyValue integer
+    $nextDefinitionFile = Join-Path $fixture 'definition-v2.json'
+    [IO.File]::WriteAllText($nextDefinitionFile, ($nextDefinition | ConvertTo-Json -Depth 30))
+    $nextGraph = & $binary publish demo 1 $nextDefinitionFile | ConvertFrom-Json
+    Assert-NativeExit 'CLI publish second revision'
+    $preview = & $binary backfill-preview demo dispatch-report selective-dispatch 1 '2025-03-01T01:00:00+08:00' '2025-03-01T07:00:00+08:00' | ConvertFrom-Json
+    Assert-NativeExit 'CLI preview seven logical times'
+    if ($nextGraph.revision -ne 2 -or $preview.items.Count -ne 7 -or $preview.revision -ne 1) { throw 'Wrong backfill preview' }
+    $partial = & $binary backfill-confirm demo $preview.id '1,3,6' | ConvertFrom-Json
+    Assert-NativeExit 'CLI confirm selected times'
+    $partialIDs = @($partial.items | Where-Object state -eq created | ForEach-Object run_id)
+    $pending = @($partial.items | Where-Object state -eq pending)
+    if ($partial.state -ne 'confirmed' -or $partialIDs.Count -ne 2 -or $pending.Count -ne 1 -or $pending[0].ordinal -ne 6) {
+        throw 'Expected two committed items and one pending item'
+    }
+    $finishedFixtureRun = [long]$partialIDs[0]
+    & $mysql @clientArgs "--database=$database" "--execute=UPDATE runs SET state='succeeded' WHERE id=$finishedFixtureRun"
+    Assert-NativeExit 'release one fixture schedule slot'
+    $receipt = & $binary backfill-resume demo $preview.id | ConvertFrom-Json
+    Assert-NativeExit 'CLI resume remaining item in a new process'
+    $again = & $binary backfill-confirm demo $preview.id '6,3,1' | ConvertFrom-Json
+    Assert-NativeExit 'CLI retry backfill confirmation'
+    $receiptIDs = @($receipt.items | Where-Object state -eq created | ForEach-Object run_id)
+    $repeatIDs = @($again.items | Where-Object state -eq created | ForEach-Object run_id)
+    if ($receipt.state -ne 'completed' -or $again.state -ne 'completed' -or $receiptIDs.Count -ne 3 -or
+        @($receiptIDs | Sort-Object -Unique).Count -ne 3 -or ($receiptIDs -join ',') -ne ($repeatIDs -join ',') -or
+        $partialIDs[0] -ne $receiptIDs[0] -or $partialIDs[1] -ne $receiptIDs[1]) {
+        throw 'Backfill confirmation changed the three selected runs'
+    }
+    $readBatch = & $binary backfill-resume demo $preview.id | ConvertFrom-Json
+    Assert-NativeExit 'CLI resume completed batch'
+    $historical = & $binary run demo $receiptIDs[0] | ConvertFrom-Json
+    Assert-NativeExit 'CLI read backfill run'
+    $expectedOperation = ($preview.items[0].impact | Where-Object node -eq extract).operation_key
+    $recordedOperation = ($historical.nodes | Where-Object key -eq extract).operation_key
+    if ($readBatch.state -ne 'completed' -or $historical.run.revision -ne 1 -or $historical.run.trigger_kind -ne 'backfill' -or
+        !$expectedOperation -or $expectedOperation -ne $recordedOperation) { throw 'Backfill run lost its frozen version or operation key' }
+    Write-Output 'CLI selected three of seven historical occurrences on revision 1, resumed in a new process, and retried without new runs.'
     $passed = $true
 } finally {
     try {

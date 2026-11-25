@@ -109,6 +109,12 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		operation = func(db *store.Store) (any, error) {
 			return db.GetSchedule(ctx, scope, args[2], args[3])
 		}
+	case "backfill-preview", "backfill-confirm", "backfill-resume", "backfill-get":
+		var err error
+		operation, err = prepareBackfillCommand(ctx, scope, args)
+		if err != nil {
+			return err
+		}
 	default:
 		return errors.New(usage)
 	}

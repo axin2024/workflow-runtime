@@ -22,6 +22,7 @@ type ScheduleScan struct {
 type ScheduleOutcome struct {
 	ScheduleID    int64      `json:"schedule_id"`
 	RunIDs        []int64    `json:"run_ids,omitempty"`
+	Reserved      int        `json:"reserved_for_backfill,omitempty"`
 	NextAt        *time.Time `json:"next_at,omitempty"`
 	SkippedFrom   *time.Time `json:"skipped_from,omitempty"`
 	SkippedBefore *time.Time `json:"skipped_before,omitempty"`
@@ -137,34 +138,13 @@ func (s *Store) runDueSchedule(ctx context.Context, actor string, now time.Time,
 	if config.Revision != 0 {
 		active = config.Revision
 	}
-	version, err := loadVersion(ctx, tx, item.dag, active)
+	activeRuns, err := activeScheduleRuns(ctx, tx, item.id)
 	if err != nil {
 		return result, err
 	}
-	if err := validateInputContract(config.Inputs, version.Graph.Definition); err != nil {
-		var issue *workflow.Issue
-		if !errors.As(err, &issue) {
-			return result, err
-		}
-		const invalid = "input_contract_changed"
-		if config.LastError == nil || *config.LastError != invalid {
-			if err := writeAudit(ctx, tx, item.workspace, item.dag, nil, actor, "schedule_input_rejected", map[string]any{
-				"schedule_id": item.id, "revision": active, "path": issue.Path, "reason": issue.Message,
-			}); err != nil {
-				return result, err
-			}
-		}
-		result.NextAt, result.Status = next, invalid
-		retryAt := now.Add(30 * time.Second)
-		return result, advanceSchedule(ctx, tx, item.id, next, &retryAt, invalid)
-	}
-	var activeRuns int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs
-		WHERE schedule_id = ? AND state NOT IN ('succeeded', 'failed', 'canceled')`, item.id).Scan(&activeRuns); err != nil {
-		return result, fmt.Errorf("count active scheduled runs: %w", err)
-	}
 	result.Status = "advanced"
 	var scanAfter *time.Time
+	var version Version
 	for range maxOccurrencesPerScan {
 		if next == nil || next.After(now) {
 			break
@@ -172,11 +152,29 @@ func (s *Store) runDueSchedule(ctx context.Context, actor string, now time.Time,
 		key := scheduledTriggerKey(item.id, *next)
 		_, _, err := runByTrigger(ctx, tx, item.workspace, item.dag, key)
 		if errors.Is(err, ErrNotFound) {
+			reserved, err := reservedOccurrence(ctx, tx, item.id, *next)
+			if err != nil {
+				return result, err
+			}
+			if reserved {
+				result.Reserved++
+				next = nextOccurrence(calendar, *next)
+				continue
+			}
 			if activeRuns >= config.MaxActiveRuns {
 				result.Status = "active_limit"
 				retryAt := now.Add(5 * time.Second)
 				scanAfter = &retryAt
 				break
+			}
+			if version.Revision == 0 {
+				version, err = loadVersion(ctx, tx, item.dag, active)
+				if err != nil {
+					return result, err
+				}
+				if err := validateInputContract(config.Inputs, version.Graph.Definition); err != nil {
+					return rejectScheduleInputs(ctx, tx, item, actor, config, result, active, now, next, err)
+				}
 			}
 			request := TriggerRequest{Key: key, Kind: "scheduled", LogicalAt: next}
 			digest, err := triggerDigest(request.Kind, version.Revision, next, config.Inputs)
@@ -199,6 +197,34 @@ func (s *Store) runDueSchedule(ctx context.Context, actor string, now time.Time,
 	}
 	result.NextAt = next
 	return result, advanceSchedule(ctx, tx, item.id, next, scanAfter, nil)
+}
+
+func rejectScheduleInputs(ctx context.Context, tx *sql.Tx, item dueSchedule, actor string, config Schedule,
+	result ScheduleOutcome, revision uint64, now time.Time, next *time.Time, cause error) (ScheduleOutcome, error) {
+	var issue *workflow.Issue
+	if !errors.As(cause, &issue) {
+		return result, cause
+	}
+	const invalid = "input_contract_changed"
+	if config.LastError == nil || *config.LastError != invalid {
+		if err := writeAudit(ctx, tx, item.workspace, item.dag, nil, actor, "schedule_input_rejected", map[string]any{
+			"schedule_id": item.id, "revision": revision, "path": issue.Path, "reason": issue.Message,
+		}); err != nil {
+			return result, err
+		}
+	}
+	result.NextAt, result.Status = next, invalid
+	retryAt := now.Add(30 * time.Second)
+	return result, advanceSchedule(ctx, tx, item.id, next, &retryAt, invalid)
+}
+
+func activeScheduleRuns(ctx context.Context, tx *sql.Tx, scheduleID int64) (int, error) {
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs
+		WHERE schedule_id = ? AND state NOT IN ('succeeded', 'failed', 'canceled')`, scheduleID).Scan(&active); err != nil {
+		return 0, fmt.Errorf("count active scheduled runs: %w", err)
+	}
+	return active, nil
 }
 
 func advanceSchedule(ctx context.Context, tx *sql.Tx, id int64, next, scanAfter *time.Time, status any) error {

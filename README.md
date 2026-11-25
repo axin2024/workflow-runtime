@@ -2,7 +2,7 @@
 
 Workflow Runtime 是一个基于 Go 和 MySQL 的自托管工作流编排平台。工作流用 DAG 描述任务、依赖、输入输出和失败处理。每次运行绑定发布时确定的图版本和输入。
 
-当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度，以及按工作空间查询历史图和节点状态。按时刻选择补跑和 Worker 执行仍在开发中。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
+当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、按时刻选择补跑，以及按工作空间查询历史图和节点状态。Worker 执行仍在开发中。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
 
 ## 校验工作流
 
@@ -48,6 +48,21 @@ go run ./cmd/workflow scheduler --interval 5s
 - 计划默认在登记运行时使用活动版本，也可设置 `revision` 固定版本。活动版本的输入契约变化时，游标和错误信息会保留。更新输入或固定到兼容版本即可继续。
 - 首次保存配置传代数 `0`，后续保存传 `schedule-get` 返回的 `generation`。设置 `enabled` 为 `false` 暂停，恢复时继续原游标。修改 Cron、时区或 `start_after` 时重新计算游标。
 
+## 按时刻选择补跑
+
+在测试库保存示例计划并暂停调度器。下面的时间窗预览 7 个候选时刻，使用明确指定的 DAG 版本 `1`。确认时把示例批次号 `1` 换成预览结果中的 `id`，并从 `available` 项中选择序号。
+
+```sh
+go run ./cmd/workflow backfill-preview demo dispatch-report hourly-dispatch 1 2026-11-01T01:00:00+08:00 2026-11-01T07:00:00+08:00
+go run ./cmd/workflow backfill-confirm demo 1 1,3,6
+go run ./cmd/workflow backfill-get demo 1
+go run ./cmd/workflow backfill-resume demo 1
+```
+
+预览使用包含起止时刻的时间窗，最多 31 天、128 个候选时刻。默认使用计划输入，也可在命令末尾给出历史版本兼容的输入文件。批次保存 UTC 时刻、业务时区与本地偏移、DAG 版本和输入摘要，每项列出触发键、受影响节点和业务操作号。`already_registered` 项会显示已有运行和实际版本。
+
+确认会冻结选集并保留待处理时刻。旧批次继续使用预览时保存的版本和输入。每条运行与其补跑回执一起落库。达到计划并发上限时，剩余项显示 `pending`，释放名额后运行 `backfill-resume` 即可继续。按原选集重新确认也可继续，序号顺序不影响确认结果。如果普通调度在确认前已登记某个时刻，批次会以 `reused` 回执记录已有运行和实际版本。批次显示 `completed` 时，选中的运行都已登记，可按运行号跟踪各自状态。
+
 ## MySQL 集成测试
 
-Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、v2 发布后的 v1 运行回读、跨工作空间读隔离、冲突审计、两台调度器并发扫描、暂停恢复以及编译后 CLI 的完整调用。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
+Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、v2 发布后的 v1 运行回读、跨工作空间读隔离、冲突审计、两台调度器并发扫描、暂停恢复，以及历史窗口七选三和重复确认。脚本也会走一遍编译后的 CLI。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。

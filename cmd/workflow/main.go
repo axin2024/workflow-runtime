@@ -38,7 +38,11 @@ const usage = `Usage:
   workflow run WORKSPACE ID
   workflow schedule-put WORKSPACE DAG EXPECTED_GENERATION SCHEDULE.json
   workflow schedule-get WORKSPACE DAG SCHEDULE
-  workflow scheduler [--once] [--at RFC3339] [--interval DURATION] [--limit N]`
+  workflow scheduler [--once] [--at RFC3339] [--interval DURATION] [--limit N]
+  workflow backfill-preview WORKSPACE DAG SCHEDULE REVISION FROM THROUGH [INPUTS.json]
+  workflow backfill-confirm WORKSPACE BATCH ORDINAL[,ORDINAL...]
+  workflow backfill-resume WORKSPACE BATCH
+  workflow backfill-get WORKSPACE BATCH`
 
 func run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {

@@ -53,11 +53,12 @@ type TriggerResult struct {
 }
 
 type NodeRun struct {
-	Key         string     `json:"key"`
-	Task        string     `json:"task"`
-	Queue       string     `json:"queue"`
-	State       string     `json:"state"`
-	AvailableAt *time.Time `json:"available_at,omitempty"`
+	Key          string     `json:"key"`
+	Task         string     `json:"task"`
+	Queue        string     `json:"queue"`
+	OperationKey string     `json:"operation_key"`
+	State        string     `json:"state"`
+	AvailableAt  *time.Time `json:"available_at,omitempty"`
 }
 
 type RunDetail struct {
@@ -173,6 +174,9 @@ func (s *Store) GetRun(ctx context.Context, scope Scope, id int64) (RunDetail, e
 	if err != nil {
 		return RunDetail{}, err
 	}
+	for i := range nodes {
+		nodes[i].OperationKey = operationKey(workspace, dag, run.TriggerKey, nodes[i].Key)
+	}
 	run.Workspace, run.DAG = scope.Workspace, version.Graph.Definition.Key
 	return RunDetail{Run: run, Version: version, Nodes: nodes}, tx.Commit()
 }
@@ -213,6 +217,12 @@ func triggerDigest(kind string, revision uint64, logicalAt *time.Time, inputs js
 		return [32]byte{}, fmt.Errorf("encode trigger identity: %w", err)
 	}
 	return sha256.Sum256(identity), nil
+}
+
+func operationKey(workspace, dag int64, trigger, node string) string {
+	identity := fmt.Sprintf("workflow/v1/%d/%d/%x/%s", workspace, dag, trigger, node)
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:])
 }
 
 func validateInputContract(inputs json.RawMessage, definition workflow.Definition) error {
