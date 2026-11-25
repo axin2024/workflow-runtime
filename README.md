@@ -2,7 +2,7 @@
 
 Workflow Runtime 是一个基于 Go 和 MySQL 的自托管工作流编排平台。工作流用 DAG 描述任务、依赖、输入输出和失败处理。每次运行绑定发布时确定的图版本和输入。
 
-当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、按时刻选择补跑，以及按工作空间查询历史图和节点状态。Worker 执行仍在开发中。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
+当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、按时刻选择补跑、Worker 执行，以及按工作空间查询运行历史。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
 
 ## 校验工作流
 
@@ -29,6 +29,23 @@ go run ./cmd/workflow run demo 1
 首次发布使用基线 `0`，后续发布填写当前活动版本。发布冲突会返回当前活动版本。`run` 命令的编号来自 `trigger` 返回的 `run.id`。登记运行时只把无前置依赖的节点标为就绪，其余节点等待依赖。
 
 触发键在同一工作空间的同一工作流内唯一。调用方超时后可用原键和原请求重送，响应会返回已登记的运行。输入对象的字段顺序和空白不影响请求摘要。同一键改用其他输入、触发类型、显式版本或逻辑时刻时，命令返回冲突，并保存原请求和新请求的摘要。`--revision` 可明确选择历史版本，`--logical-at` 接受 RFC 3339 时间并按 UTC 保存。
+
+## 执行示例工作流
+
+运维端注册 Worker，从响应中安全提取一次性显示的 `token`，注入 Worker 进程的 `WORKFLOW_WORKER_TOKEN` 环境变量。以下命令在上述 `demo` 工作空间注册示例处理器，并在运维端启动 Worker API。
+
+```sh
+go run ./cmd/workflow worker-register demo dispatch-a 1 reports:extract reports:aggregate reports:inspect reports:report reports:cleanup
+go run ./cmd/workflow worker-api --listen 127.0.0.1:8080
+```
+
+在另一个终端注入 Worker 令牌后启动执行进程。该进程只需要 API 地址与令牌。
+
+```sh
+go run ./cmd/workflow worker --endpoint http://127.0.0.1:8080
+```
+
+`--once` 只尝试领取一次，暂时无任务时输出 `null`。常驻 Worker 在空闲时轮询，持有任务时定期续期。可同时为不同队列、任务类型配置独立 Worker 凭据。示例处理器读取合成数据，最终生成 `12 dispatch records (passed)`。用 `workflow run demo <运行编号>` 查看节点输出、依赖判定和各次尝试。异机接入及自定义处理器参见 [Worker HTTP 接口](docs/worker-api.md)。
 
 ## 定时调度
 
@@ -65,4 +82,4 @@ go run ./cmd/workflow backfill-resume demo 1
 
 ## MySQL 集成测试
 
-Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、v2 发布后的 v1 运行回读、跨工作空间读隔离、冲突审计、两台调度器并发扫描、暂停恢复，以及历史窗口七选三和重复确认。脚本也会走一遍编译后的 CLI。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
+Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、v2 发布后的 v1 运行回读、跨工作空间隔离、冲突审计、两台调度器并发扫描、暂停恢复、历史窗口七选三、租约失效接管、并行分支汇合、失败清理和外部任务失联。脚本还用两个 Worker 身份经 HTTP 执行示例并回读 MySQL。也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。

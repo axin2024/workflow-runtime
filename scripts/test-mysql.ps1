@@ -14,6 +14,7 @@ $database = "workflow_test_$key"
 $rootPassword = [guid]::NewGuid().ToString('N')
 $appPassword = [guid]::NewGuid().ToString('N')
 $server = $null
+$workerAPI = $null
 $scanners = @()
 $passed = $false
 
@@ -21,16 +22,19 @@ function Assert-NativeExit([string]$Operation) {
     if ($LASTEXITCODE -ne 0) { throw "$Operation exited with code $LASTEXITCODE" }
 }
 
-$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-try {
-    $listener.Start()
-    $port = $listener.LocalEndpoint.Port
-} finally {
-    $listener.Stop()
+function Get-LoopbackPort {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        return $listener.LocalEndpoint.Port
+    } finally {
+        $listener.Stop()
+    }
 }
+$port = Get-LoopbackPort
 
 $savedEnvironment = @{}
-foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'MYSQL_PWD')) {
+foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'WORKFLOW_WORKER_TOKEN', 'MYSQL_PWD')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -121,6 +125,55 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     }
     Write-Output 'CLI migration, workspace creation, publication, trigger deduplication, and run readback passed.'
 
+    $workerA = & $binary worker-register demo stage-a 1 reports:extract reports:aggregate | ConvertFrom-Json
+    Assert-NativeExit 'register stage-a worker'
+    $workerB = & $binary worker-register demo stage-b 1 reports:inspect reports:report | ConvertFrom-Json
+    Assert-NativeExit 'register stage-b worker'
+    $apiPort = Get-LoopbackPort
+    $apiOrigin = "http://127.0.0.1:$apiPort"
+    $workerAPI = Start-Process -FilePath $binary -ArgumentList @('worker-api', '--listen', "127.0.0.1:$apiPort") -WindowStyle Hidden -PassThru `
+        -RedirectStandardError (Join-Path $fixture 'worker-api.log')
+    $healthy = $false
+    for ($i = 0; $i -lt 40; $i++) {
+        if ($workerAPI.HasExited) { throw 'Worker API exited before accepting connections' }
+        try {
+            $health = Invoke-WebRequest -Uri "$apiOrigin/healthz" -TimeoutSec 1
+            if ($health.StatusCode -eq 204) { $healthy = $true; break }
+        } catch {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if (!$healthy) { throw 'Worker API failed its health check' }
+    $fixtureDSN = $env:WORKFLOW_MYSQL_DSN
+    $env:WORKFLOW_MYSQL_DSN = $null
+    $env:WORKFLOW_TEST_MYSQL_DSN = $null
+    $env:MYSQL_PWD = $null
+    $env:WORKFLOW_WORKER_TOKEN = $workerB.token
+    $idle = & $binary worker --once --endpoint $apiOrigin | ConvertFrom-Json
+    Assert-NativeExit 'worker respects its own queue and tasks'
+    if ($null -ne $idle) { throw 'Stage-b worker claimed the extract node' }
+    foreach ($stage in @('extract', 'aggregate', 'inspect', 'report')) {
+        $env:WORKFLOW_WORKER_TOKEN = if ($stage -in @('extract', 'aggregate')) { $workerA.token } else { $workerB.token }
+        $result = & $binary worker --once --endpoint $apiOrigin | ConvertFrom-Json
+        Assert-NativeExit "execute $stage through the Worker API"
+        if ($result.run_id -ne $created.run.id -or $result.node -ne $stage -or $result.state -ne 'succeeded' -or $result.epoch -ne 1) {
+            throw "Unexpected Worker receipt for $stage"
+        }
+    }
+    $env:WORKFLOW_WORKER_TOKEN = $null
+    $env:WORKFLOW_MYSQL_DSN = $fixtureDSN
+    $env:WORKFLOW_TEST_MYSQL_DSN = $fixtureDSN
+    $env:MYSQL_PWD = $rootPassword
+    $completedRun = & $binary run demo $created.run.id | ConvertFrom-Json
+    Assert-NativeExit 'read worker execution results'
+    $report = $completedRun.nodes | Where-Object key -eq report
+    $cleanup = $completedRun.nodes | Where-Object key -eq cleanup
+    if ($completedRun.run.state -ne 'succeeded' -or $report.outputs.summary -ne '12 dispatch records (passed)' -or
+        $report.attempts[0].worker -ne 'stage-b' -or $cleanup.state -ne 'skipped') {
+        throw 'Unexpected worker execution result'
+    }
+    Write-Output 'Token-only workers executed four diamond nodes through HTTP. The result and skipped branch were read from MySQL.'
+
     $schedule = & $binary schedule-put demo dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
     Assert-NativeExit 'CLI save schedule'
     $scanArguments = @('scheduler', '--once', '--at', '2026-11-01T03:00:00+08:00')
@@ -200,6 +253,10 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     $passed = $true
 } finally {
     try {
+        if ($workerAPI -and !$workerAPI.HasExited) {
+            Stop-Process -Id $workerAPI.Id
+            if (!$workerAPI.WaitForExit(5000)) { throw 'Fixture Worker API failed to stop' }
+        }
         foreach ($scanner in $scanners) {
             if (!$scanner.HasExited) {
                 Stop-Process -Id $scanner.Id

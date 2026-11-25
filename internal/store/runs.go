@@ -45,6 +45,7 @@ type Run struct {
 	Inputs     json.RawMessage `json:"inputs"`
 	State      string          `json:"state"`
 	CreatedAt  time.Time       `json:"created_at"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }
 
 type TriggerResult struct {
@@ -53,12 +54,21 @@ type TriggerResult struct {
 }
 
 type NodeRun struct {
-	Key          string     `json:"key"`
-	Task         string     `json:"task"`
-	Queue        string     `json:"queue"`
-	OperationKey string     `json:"operation_key"`
-	State        string     `json:"state"`
-	AvailableAt  *time.Time `json:"available_at,omitempty"`
+	Key          string             `json:"key"`
+	Task         string             `json:"task"`
+	Queue        string             `json:"queue"`
+	OperationKey string             `json:"operation_key"`
+	State        string             `json:"state"`
+	AvailableAt  *time.Time         `json:"available_at,omitempty"`
+	FinishedAt   *time.Time         `json:"finished_at,omitempty"`
+	LeaseEpoch   uint64             `json:"lease_epoch"`
+	LeaseUntil   *time.Time         `json:"lease_until,omitempty"`
+	Branch       *string            `json:"branch,omitempty"`
+	Outputs      json.RawMessage    `json:"outputs,omitempty"`
+	OutputDigest *string            `json:"output_digest,omitempty"`
+	FailureCode  *string            `json:"failure_code,omitempty"`
+	Dependencies []DependencyResult `json:"dependencies,omitempty"`
+	Attempts     []AttemptResult    `json:"attempts,omitempty"`
 }
 
 type RunDetail struct {
@@ -177,19 +187,22 @@ func (s *Store) GetRun(ctx context.Context, scope Scope, id int64) (RunDetail, e
 	for i := range nodes {
 		nodes[i].OperationKey = operationKey(workspace, dag, run.TriggerKey, nodes[i].Key)
 	}
+	if err := attachExecutionDetails(ctx, tx, id, version.Graph.Definition, nodes); err != nil {
+		return RunDetail{}, err
+	}
 	run.Workspace, run.DAG = scope.Workspace, version.Graph.Definition.Key
 	return RunDetail{Run: run, Version: version, Nodes: nodes}, tx.Commit()
 }
 
 const runColumns = `id, dag_id, schedule_id, revision, trigger_key, trigger_kind, logical_at,
-	input_values, state, created_at, request_digest`
+	input_values, state, created_at, finished_at, request_digest`
 
 func readRun(row *sql.Row) (Run, int64, []byte, error) {
 	var run Run
 	var dag int64
 	var inputs, digest []byte
 	err := row.Scan(&run.ID, &dag, &run.ScheduleID, &run.Revision, &run.TriggerKey, &run.Kind, &run.LogicalAt,
-		&inputs, &run.State, &run.CreatedAt, &digest)
+		&inputs, &run.State, &run.CreatedAt, &run.FinishedAt, &digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, 0, nil, ErrNotFound
 	}
@@ -294,7 +307,8 @@ func putNodes(ctx context.Context, tx *sql.Tx, id int64, definition workflow.Def
 }
 
 func listNodes(ctx context.Context, tx *sql.Tx, id int64) ([]NodeRun, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT node_key, task, queue, state, available_at
+	rows, err := tx.QueryContext(ctx, `SELECT node_key, task, queue, state, available_at, finished_at, lease_epoch,
+		lease_until, result_branch, output_values, LOWER(HEX(output_digest)), failure_code
 		FROM node_runs WHERE run_id = ? ORDER BY node_key`, id)
 	if err != nil {
 		return nil, fmt.Errorf("list run nodes: %w", err)
@@ -303,9 +317,12 @@ func listNodes(ctx context.Context, tx *sql.Tx, id int64) ([]NodeRun, error) {
 	nodes := make([]NodeRun, 0)
 	for rows.Next() {
 		var node NodeRun
-		if err := rows.Scan(&node.Key, &node.Task, &node.Queue, &node.State, &node.AvailableAt); err != nil {
+		var outputs []byte
+		if err := rows.Scan(&node.Key, &node.Task, &node.Queue, &node.State, &node.AvailableAt, &node.FinishedAt, &node.LeaseEpoch,
+			&node.LeaseUntil, &node.Branch, &outputs, &node.OutputDigest, &node.FailureCode); err != nil {
 			return nil, fmt.Errorf("read run node: %w", err)
 		}
+		node.Outputs = outputs
 		nodes = append(nodes, node)
 	}
 	return nodes, rows.Err()

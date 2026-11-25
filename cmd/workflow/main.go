@@ -17,7 +17,7 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if len(os.Args) < 2 || os.Args[1] != "scheduler" {
+	if len(os.Args) < 2 || !longRunningCommand(os.Args[1]) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -26,6 +26,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func longRunningCommand(name string) bool {
+	return name == "scheduler" || name == "worker-api" || name == "worker"
 }
 
 const usage = `Usage:
@@ -42,14 +46,23 @@ const usage = `Usage:
   workflow backfill-preview WORKSPACE DAG SCHEDULE REVISION FROM THROUGH [INPUTS.json]
   workflow backfill-confirm WORKSPACE BATCH ORDINAL[,ORDINAL...]
   workflow backfill-resume WORKSPACE BATCH
-  workflow backfill-get WORKSPACE BATCH`
+  workflow backfill-get WORKSPACE BATCH
+  workflow worker-register WORKSPACE NAME MAX_ACTIVE QUEUE:TASK [...]
+  workflow worker-api [--listen 127.0.0.1:8080]
+  workflow worker [--once] [--endpoint URL] [--interval DURATION] [--lease-seconds N]`
 
 func run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {
 		_, err := fmt.Fprintln(out, usage)
 		return err
 	}
-	if args[0] != "validate" {
+	switch args[0] {
+	case "worker":
+		return runWorker(ctx, args[1:], out, os.Stderr)
+	case "worker-api":
+		return runWorkerAPI(ctx, args[1:])
+	case "validate":
+	default:
 		return runDatabaseCommand(ctx, args, out)
 	}
 	if len(args) < 2 || len(args) > 3 {

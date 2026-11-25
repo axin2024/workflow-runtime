@@ -115,6 +115,14 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		if err != nil {
 			return err
 		}
+	case "worker-register":
+		key, maxActive, permissions, err := parseWorkerRegistration(args)
+		if err != nil {
+			return err
+		}
+		operation = func(db *store.Store) (any, error) {
+			return db.RegisterWorker(ctx, scope, key, maxActive, permissions)
+		}
 	default:
 		return errors.New(usage)
 	}
