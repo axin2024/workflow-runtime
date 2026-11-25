@@ -92,12 +92,26 @@ func (s *Store) CreateWorkspace(ctx context.Context, key string) error {
 	if !identifier.MatchString(key) {
 		return errors.New("workspace must be a lowercase identifier of up to 64 characters")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO workspaces (workspace_key) VALUES (?)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := workspaceID(ctx, tx, key); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO workspaces (workspace_key) VALUES (?)
 		ON DUPLICATE KEY UPDATE workspace_key = workspace_key`, key)
 	if err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `INSERT INTO workspace_capacity (workspace_id)
+		SELECT id FROM workspaces WHERE workspace_key = ? ON DUPLICATE KEY UPDATE workspace_id = workspace_capacity.workspace_id`, key); err != nil {
+		return fmt.Errorf("create workspace capacity: %w", err)
+	}
+	return tx.Commit()
 }
 
 func workspaceID(ctx context.Context, tx *sql.Tx, key string) (int64, error) {

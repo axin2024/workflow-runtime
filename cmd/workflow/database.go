@@ -129,6 +129,12 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		operation = func(db *store.Store) (any, error) {
 			return db.RegisterWorker(ctx, scope, key, maxActive, permissions)
 		}
+	case "pool-put", "pool-get", "workspace-quota-put", "workspace-quota-get", "queue-quota-put", "queue-quota-get":
+		var err error
+		operation, err = prepareCapacity(ctx, scope, args)
+		if err != nil {
+			return err
+		}
 	default:
 		return errors.New(usage)
 	}

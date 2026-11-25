@@ -47,6 +47,8 @@ go run ./cmd/workflow worker --endpoint http://127.0.0.1:8080
 
 `--once` 只尝试领取一次，暂时无任务时输出 `null`。常驻 Worker 在空闲时轮询，持有任务时定期续期。可同时为不同队列、任务类型配置独立 Worker 凭据。示例处理器读取合成数据，最终生成 `12 dispatch records (passed)`。用 `workflow run demo <运行编号>` 查看节点输出、依赖判定和各次尝试。异机接入及自定义处理器参见 [Worker HTTP 接口](docs/worker-api.md)。
 
+可为每个工作空间和队列设置有效租约上限，也可将多个工作空间的队列绑定到同一资源池。配置、用量查看和压测命令见 [执行配额](docs/execution-capacity.md)。
+
 ## 定时调度
 
 在已发布工作流的工作空间中保存计划，再启动调度器。正常运行时，调度器使用 MySQL 的 UTC 时钟。维护时可在测试库用 `--once --at` 指定扫描时刻。

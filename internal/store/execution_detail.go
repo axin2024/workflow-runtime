@@ -18,6 +18,7 @@ type DependencyResult struct {
 type AttemptResult struct {
 	Epoch          uint64     `json:"epoch"`
 	Worker         string     `json:"worker"`
+	Pool           *string    `json:"pool,omitempty"`
 	State          string     `json:"state"`
 	QueuedAt       time.Time  `json:"queued_at"`
 	StartedAt      time.Time  `json:"started_at"`
@@ -66,9 +67,10 @@ func attachExecutionDetails(ctx context.Context, tx *sql.Tx, runID int64, graph 
 			byKey[node.Key].Dependencies = append(byKey[node.Key].Dependencies, decision)
 		}
 	}
-	attempts, err := tx.QueryContext(ctx, `SELECT a.node_key, a.ordinal, w.worker_key, a.state, a.queued_at, a.started_at,
+	attempts, err := tx.QueryContext(ctx, `SELECT a.node_key, a.ordinal, w.worker_key, p.pool_key, a.state, a.queued_at, a.started_at,
 		a.lease_until, a.deadline_at, a.finished_at, a.failure_code, a.failure_message, LOWER(HEX(a.result_digest))
-		FROM attempts a JOIN workers w ON w.id = a.worker_id WHERE a.run_id = ? ORDER BY a.node_key, a.ordinal`, runID)
+		FROM attempts a JOIN workers w ON w.id = a.worker_id LEFT JOIN execution_pools p ON p.id = a.pool_id
+		WHERE a.run_id = ? ORDER BY a.node_key, a.ordinal`, runID)
 	if err != nil {
 		return err
 	}
@@ -76,7 +78,7 @@ func attachExecutionDetails(ctx context.Context, tx *sql.Tx, runID int64, graph 
 	for attempts.Next() {
 		var key string
 		var value AttemptResult
-		if err := attempts.Scan(&key, &value.Epoch, &value.Worker, &value.State, &value.QueuedAt, &value.StartedAt, &value.LeaseUntil,
+		if err := attempts.Scan(&key, &value.Epoch, &value.Worker, &value.Pool, &value.State, &value.QueuedAt, &value.StartedAt, &value.LeaseUntil,
 			&value.Deadline, &value.FinishedAt, &value.FailureCode, &value.FailureMessage, &value.ResultDigest); err != nil {
 			return err
 		}

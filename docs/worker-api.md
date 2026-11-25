@@ -12,7 +12,7 @@
 {"tasks":["aggregate","inspect"],"lease_seconds":15}
 ```
 
-领取后返回 `task` 对象，包含 `run_id`、`node`、`epoch`、`operation_key`、`task`、`queue`、`effect`、`inputs`、`claimed_at`、`lease_until` 和 `deadline`。输入来自本次运行固定的版本及其指定的上游输出。领取后应立即开始执行。暂时无任务时返回 `{"task":null}`。
+领取后返回 `task` 对象，包含 `run_id`、`node`、`epoch`、`operation_key`、`task`、`queue`、`effect`、`inputs`、`claimed_at`、`lease_until` 和 `deadline`。使用共享资源池时还返回 `pool`。输入来自本次运行固定的版本及其指定的上游输出。领取后应立即开始执行。暂时无任务或配额已满时返回 `{"task":null}`。
 
 ## 续期和完成
 

@@ -113,7 +113,7 @@ func applyNodeChange(ctx context.Context, tx *sql.Tx, runID int64, key string, c
 		finished = &now
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE node_runs SET state = ?, available_at = ?, lease_worker_id = NULL, lease_until = NULL,
-		deadline_at = NULL, result_branch = ?, output_values = ?, output_digest = ?, failure_code = ?, finished_at = ?
+		deadline_at = NULL, lease_pool_id = NULL, result_branch = ?, output_values = ?, output_digest = ?, failure_code = ?, finished_at = ?
 		WHERE run_id = ? AND node_key = ?`, change.state, change.availableAt, branch, output, digest, failure, finished, runID, key)
 	if err != nil {
 		return fmt.Errorf("save node result: %w", err)

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$MySQLBin, [string]$PreviousCLI)
+param([Parameter(Mandatory)][string]$MySQLBin, [string]$PreviousCLI, [switch]$CapacityLoad)
 
 $ErrorActionPreference = 'Stop'
 $MySQLBin = (Resolve-Path -LiteralPath $MySQLBin).Path
@@ -34,7 +34,7 @@ function Get-LoopbackPort {
 $port = Get-LoopbackPort
 
 $savedEnvironment = @{}
-foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'WORKFLOW_WORKER_TOKEN', 'MYSQL_PWD')) {
+foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'WORKFLOW_WORKER_TOKEN', 'WORKFLOW_CAPACITY_LOAD', 'MYSQL_PWD')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -72,6 +72,7 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     $env:WORKFLOW_TEST_MYSQL_DSN = "workflow_test:${appPassword}@tcp(127.0.0.1:$port)/$database"
     $env:WORKFLOW_MYSQL_DSN = $env:WORKFLOW_TEST_MYSQL_DSN
     $env:WORKFLOW_ACTOR = 'fixture-operator'
+    if ($CapacityLoad) { $env:WORKFLOW_CAPACITY_LOAD = '1' }
     if ($PreviousCLI) {
         $previousMigration = & $PreviousCLI migrate | ConvertFrom-Json
         Assert-NativeExit 'previous CLI migrate'
@@ -89,6 +90,10 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     }
     go test -count=1 -v ./...
     Assert-NativeExit 'Go tests'
+    if ($env:WORKFLOW_CAPACITY_LOAD -eq '1') {
+        $server.Refresh()
+        Write-Output ('MySQL fixture peak working set: {0:N1} MiB' -f ($server.PeakWorkingSet64 / 1MB))
+    }
     go vet ./...
     Assert-NativeExit 'Go vet'
     go build -o $binary ./cmd/workflow
@@ -124,6 +129,23 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
         throw 'Unexpected CLI response'
     }
     Write-Output 'CLI migration, workspace creation, publication, trigger deduplication, and run readback passed.'
+
+    $sharedPool = & $binary pool-put report-executors 0 2 | ConvertFrom-Json
+    Assert-NativeExit 'configure shared pool'
+    $workspaceQuota = & $binary workspace-quota-put demo 0 3 | ConvertFrom-Json
+    Assert-NativeExit 'configure workspace quota'
+    $queueQuota = & $binary queue-quota-put demo reports 0 2 report-executors | ConvertFrom-Json
+    Assert-NativeExit 'bind report queue to shared pool'
+    $readPool = & $binary pool-get report-executors | ConvertFrom-Json
+    Assert-NativeExit 'read shared pool'
+    $readWorkspaceQuota = & $binary workspace-quota-get demo | ConvertFrom-Json
+    Assert-NativeExit 'read workspace quota'
+    $readQueueQuota = & $binary queue-quota-get demo reports | ConvertFrom-Json
+    Assert-NativeExit 'read queue quota'
+    if ($sharedPool.generation -ne 1 -or $readPool.max_active -ne 2 -or $workspaceQuota.max_active -ne 3 -or
+        $readWorkspaceQuota.generation -ne 1 -or $queueQuota.generation -ne 1 -or $readQueueQuota.pool -ne 'report-executors') {
+        throw 'Unexpected capacity configuration or readback'
+    }
 
     $workerA = & $binary worker-register demo stage-a 1 reports:extract reports:aggregate | ConvertFrom-Json
     Assert-NativeExit 'register stage-a worker'
@@ -171,6 +193,11 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     if ($completedRun.run.state -ne 'succeeded' -or $report.outputs.summary -ne '12 dispatch records (passed)' -or
         $report.attempts[0].worker -ne 'stage-b' -or $cleanup.state -ne 'skipped') {
         throw 'Unexpected worker execution result'
+    }
+    $emptyPool = & $binary pool-get report-executors | ConvertFrom-Json
+    Assert-NativeExit 'read released pool'
+    if ($report.attempts[0].pool -ne 'report-executors' -or $emptyPool.active -ne 0) {
+        throw 'Pool slot was not released or pool history was not recorded'
     }
     Write-Output 'Token-only workers executed four diamond nodes through HTTP. The result and skipped branch were read from MySQL.'
 

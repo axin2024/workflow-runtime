@@ -52,7 +52,14 @@ func (s *Store) Renew(ctx context.Context, token string, request RenewRequest) (
 		return LeaseRenewal{}, err
 	}
 	defer tx.Rollback()
-	worker, run, _, task, err := lockLease(ctx, tx, token, request.Lease)
+	worker, err := lockWorker(ctx, tx, token)
+	if err != nil {
+		return LeaseRenewal{}, err
+	}
+	if err := lockRenewalCapacity(ctx, tx, worker, request.Lease); err != nil {
+		return LeaseRenewal{}, err
+	}
+	run, _, task, err := lockLeaseRun(ctx, tx, worker, request.Lease)
 	if err != nil {
 		return LeaseRenewal{}, err
 	}
@@ -149,21 +156,26 @@ func lockLease(ctx context.Context, tx *sql.Tx, token string, ref LeaseRef) (wor
 	if err != nil {
 		return workerIdentity{}, Run{}, 0, taskRecord{}, err
 	}
+	run, dag, task, err := lockLeaseRun(ctx, tx, worker, ref)
+	return worker, run, dag, task, err
+}
+
+func lockLeaseRun(ctx context.Context, tx *sql.Tx, worker workerIdentity, ref LeaseRef) (Run, int64, taskRecord, error) {
 	run, dag, err := lockWorkerRun(ctx, tx, worker.workspace, ref.RunID, false)
 	if errors.Is(err, ErrNotFound) {
-		return workerIdentity{}, Run{}, 0, taskRecord{}, ErrLeaseLost
+		return Run{}, 0, taskRecord{}, ErrLeaseLost
 	}
 	if err != nil {
-		return workerIdentity{}, Run{}, 0, taskRecord{}, err
+		return Run{}, 0, taskRecord{}, err
 	}
 	if operationKey(worker.workspace, dag, run.TriggerKey, ref.Node) != ref.OperationKey {
-		return workerIdentity{}, Run{}, 0, taskRecord{}, ErrLeaseLost
+		return Run{}, 0, taskRecord{}, ErrLeaseLost
 	}
 	task, err := readTask(ctx, tx, run.ID, ref.Node)
 	if errors.Is(err, ErrNotFound) || (err == nil && task.epoch != ref.Epoch) {
-		return workerIdentity{}, Run{}, 0, taskRecord{}, ErrLeaseLost
+		return Run{}, 0, taskRecord{}, ErrLeaseLost
 	}
-	return worker, run, dag, task, err
+	return run, dag, task, err
 }
 
 func liveLease(task taskRecord, workerID int64, now time.Time) bool {

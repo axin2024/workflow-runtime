@@ -51,6 +51,12 @@ const usage = `Usage:
   workflow backfill-resume WORKSPACE BATCH
   workflow backfill-get WORKSPACE BATCH
   workflow worker-register WORKSPACE NAME MAX_ACTIVE QUEUE:TASK [...]
+  workflow pool-put POOL EXPECTED_GENERATION SLOTS
+  workflow pool-get POOL
+  workflow workspace-quota-put WORKSPACE EXPECTED_GENERATION SLOTS|unlimited
+  workflow workspace-quota-get WORKSPACE
+  workflow queue-quota-put WORKSPACE QUEUE EXPECTED_GENERATION SLOTS|unlimited [POOL]
+  workflow queue-quota-get WORKSPACE QUEUE
   workflow worker-api [--listen 127.0.0.1:8080]
   workflow worker [--once] [--endpoint URL] [--interval DURATION] [--lease-seconds N]`
 
