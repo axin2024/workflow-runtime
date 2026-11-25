@@ -69,7 +69,9 @@ func taskInputs(ctx context.Context, tx *sql.Tx, run Run, node workflow.Node) (j
 		values, found := outputs[binding.Node]
 		if !found {
 			var raw []byte
-			if err := tx.QueryRowContext(ctx, `SELECT output_values FROM node_runs WHERE run_id = ? AND node_key = ? AND state = 'succeeded'`,
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(origin.output_values, n.output_values) FROM node_runs n
+				LEFT JOIN node_runs origin ON origin.run_id = n.reused_from_run_id AND origin.node_key = n.node_key
+				WHERE n.run_id = ? AND n.node_key = ? AND n.state = 'succeeded'`,
 				run.ID, binding.Node).Scan(&raw); err != nil {
 				return nil, fmt.Errorf("read node outputs: %w", err)
 			}

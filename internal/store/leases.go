@@ -269,7 +269,7 @@ func startAttempt(ctx context.Context, tx *sql.Tx, worker workerIdentity, run Ru
 	if deadline.Before(until) {
 		until = deadline
 	}
-	op := operationKey(worker.workspace, dag, run.TriggerKey, node.Key)
+	op := run.operationKey(worker.workspace, dag, node.Key)
 	digest, err := hex.DecodeString(op)
 	if err != nil {
 		return nil, err

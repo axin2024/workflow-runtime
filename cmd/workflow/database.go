@@ -91,7 +91,7 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		operation = func(db *store.Store) (any, error) {
 			return db.GetRun(ctx, scope, id)
 		}
-	case "run-cancel", "run-resolve", "execution-sweep":
+	case "run-cancel", "run-resolve", "run-rerun-preview", "run-rerun", "run-export", "execution-sweep":
 		var err error
 		operation, err = prepareRunControl(ctx, scope, args)
 		if err != nil {

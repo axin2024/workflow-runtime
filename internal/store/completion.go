@@ -35,6 +35,7 @@ type CompletionRequest struct {
 	Outputs        json.RawMessage `json:"outputs,omitempty"`
 	FailureCode    string          `json:"failure_code,omitempty"`
 	FailureMessage string          `json:"failure_message,omitempty"`
+	LogExcerpt     string          `json:"log_excerpt,omitempty"`
 }
 
 type CompletionReceipt struct {
@@ -135,9 +136,16 @@ func (s *Store) Complete(ctx context.Context, token string, request CompletionRe
 	if err != nil {
 		return CompletionReceipt{}, err
 	}
+	var logDigest []byte
+	if request.LogExcerpt != "" {
+		hash := sha256.Sum256([]byte(request.LogExcerpt))
+		logDigest = hash[:]
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE attempts SET state = ?, node_state = ?, finished_at = ?, result_digest = ?,
-		failure_code = NULLIF(?, ''), failure_message = NULLIF(?, '') WHERE run_id = ? AND node_key = ? AND ordinal = ?`,
-		outcome, change.state, now, digest[:], request.FailureCode, request.FailureMessage, run.ID, node.Key, request.Lease.Epoch); err != nil {
+		failure_code = NULLIF(?, ''), failure_message = NULLIF(?, ''), log_excerpt = NULLIF(?, ''), log_digest = ?
+		WHERE run_id = ? AND node_key = ? AND ordinal = ?`,
+		outcome, change.state, now, digest[:], request.FailureCode, request.FailureMessage, request.LogExcerpt, logDigest,
+		run.ID, node.Key, request.Lease.Epoch); err != nil {
 		return CompletionReceipt{}, fmt.Errorf("write attempt result: %w", err)
 	}
 	if err := applyNodeChange(ctx, tx, run.ID, node.Key, change, now); err != nil {
@@ -168,7 +176,7 @@ func lockLeaseRun(ctx context.Context, tx *sql.Tx, worker workerIdentity, ref Le
 	if err != nil {
 		return Run{}, 0, taskRecord{}, err
 	}
-	if operationKey(worker.workspace, dag, run.TriggerKey, ref.Node) != ref.OperationKey {
+	if run.operationKey(worker.workspace, dag, ref.Node) != ref.OperationKey {
 		return Run{}, 0, taskRecord{}, ErrLeaseLost
 	}
 	task, err := readTask(ctx, tx, run.ID, ref.Node)
@@ -203,6 +211,9 @@ func previousCompletion(ctx context.Context, tx *sql.Tx, workerID int64, ref Lea
 func normalizeCompletion(request *CompletionRequest) ([32]byte, error) {
 	if !request.Lease.valid() {
 		return [32]byte{}, fmt.Errorf("%w: a complete lease is required", ErrInvalidWorkerRequest)
+	}
+	if len(request.LogExcerpt) > 4096 || !utf8.ValidString(request.LogExcerpt) {
+		return [32]byte{}, fmt.Errorf("%w: a log excerpt must be valid UTF-8 and at most 4096 bytes", ErrInvalidWorkerRequest)
 	}
 	if request.Success {
 		if request.FailureCode != "" || request.FailureMessage != "" {

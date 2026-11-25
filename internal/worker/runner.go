@@ -16,6 +16,7 @@ type Result struct {
 	Outputs     json.RawMessage
 	Branch      string
 	FailureCode string
+	LogExcerpt  string
 }
 
 type Handler func(context.Context, store.ClaimedTask) Result
@@ -85,7 +86,7 @@ func (r *Runner) RunOne(ctx context.Context) (*store.CompletionReceipt, error) {
 		completeCtx, stopCompletion := context.WithDeadline(ctx, deadline)
 		defer stopCompletion()
 		request := store.CompletionRequest{Lease: task.LeaseRef, Success: result.FailureCode == "",
-			Outputs: result.Outputs, Branch: result.Branch, FailureCode: result.FailureCode}
+			Outputs: result.Outputs, Branch: result.Branch, FailureCode: result.FailureCode, LogExcerpt: result.LogExcerpt}
 		receipt, err = r.api.Complete(completeCtx, request)
 		if errors.Is(err, workerapi.ErrTemporary) && completeCtx.Err() == nil {
 			receipt, err = r.api.Complete(completeCtx, request)

@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -189,7 +191,14 @@ func TestMySQLWorkersFenceExpiredLeaseAndAdvanceDiamond(t *testing.T) {
 		t.Fatal(err)
 	}
 	inspect = requireClaim(tokenB, "inspect", 10)
-	if result, err := db.Complete(ctx, tokenB, CompletionRequest{Lease: inspect.LeaseRef, FailureCode: "invalid_record"}); err != nil || result.State != workflow.NodeFailed {
+	const excerpt = "测试记录未通过校验"
+	badInspection := CompletionRequest{Lease: inspect.LeaseRef, FailureCode: "invalid_record", LogExcerpt: excerpt}
+	oversized := badInspection
+	oversized.LogExcerpt = strings.Repeat("界", 1400)
+	if _, err := db.Complete(ctx, tokenB, oversized); !errors.Is(err, ErrInvalidWorkerRequest) {
+		t.Fatalf("oversized log excerpt: %v", err)
+	}
+	if result, err := db.Complete(ctx, tokenB, badInspection); err != nil || result.State != workflow.NodeFailed {
 		t.Fatalf("terminal inspect failure: %+v, %v", result, err)
 	}
 	cleanupTask := requireClaim(tokenB, "cleanup", 10)
@@ -203,6 +212,124 @@ func TestMySQLWorkersFenceExpiredLeaseAndAdvanceDiamond(t *testing.T) {
 	failed, err := db.GetRun(ctx, scope, trigger.Run.ID)
 	if err != nil || failed.Run.State != "failed" || claim(tokenB, "report", 10) != nil {
 		t.Fatalf("the failure branch did not settle as expected: %+v, %v", failed.Run, err)
+	}
+	parentID := failed.Run.ID
+	changed := version.Graph.Definition
+	changed.Inputs["batch"] = workflow.String
+	newDefinition, err := json.Marshal(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, err := db.Publish(ctx, scope, 1, newDefinition); err != nil || current.Revision != 2 {
+		t.Fatalf("publish replacement: %+v, %v", current, err)
+	}
+	if _, err := db.PreviewRerun(ctx, foreign, parentID, []string{"inspect"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-workspace preview: %v", err)
+	}
+	if _, err := db.PreviewRerun(ctx, scope, parentID, []string{"extract"}); !errors.Is(err, ErrRunControlConflict) {
+		t.Fatalf("rerun of successful selection: %v", err)
+	}
+	selection := []string{"inspect"}
+	plan, err := db.PreviewRerun(ctx, scope, parentID, selection)
+	if err != nil || plan.Revision != 1 || plan.GraphDigest != failed.Version.Graph.Digest || plan.InputDigest != failed.InputDigest {
+		t.Fatalf("frozen rerun: %+v, %v", plan, err)
+	}
+	const requestKey = "repair-inspection"
+	type submission struct {
+		record RerunRecord
+		err    error
+	}
+	submissions := make(chan submission, 4)
+	for range cap(submissions) {
+		go func() {
+			record, err := db.CreateRerun(ctx, scope, parentID, requestKey, selection)
+			submissions <- submission{record: record, err: err}
+		}()
+	}
+	var childID int64
+	created := 0
+	for range cap(submissions) {
+		entry := <-submissions
+		if entry.err != nil || entry.record.RunID <= parentID || entry.record.Plan.ParentRunID != parentID ||
+			(childID != 0 && childID != entry.record.RunID) {
+			t.Fatalf("concurrent rerun: %+v, %v", entry.record, entry.err)
+		}
+		childID = entry.record.RunID
+		if !entry.record.Replayed {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("created %d derived runs", created)
+	}
+	if _, err := db.CreateRerun(ctx, scope, parentID, requestKey, []string{"extract"}); !errors.Is(err, ErrRunControlConflict) {
+		t.Fatalf("rerun key with changed selection: %v", err)
+	}
+	for _, node := range []string{"extract", "aggregate", "cleanup", "report"} {
+		if task := claim(tokenB, node, 10); task != nil {
+			t.Fatalf("unexpected runnable node %s: %+v", node, task)
+		}
+	}
+	childInspect := claim(tokenB, "inspect", 10)
+	if childInspect == nil || childInspect.RunID != childID || childInspect.Epoch != 1 || childInspect.OperationKey != inspect.OperationKey ||
+		string(childInspect.Inputs) != string(inspect.Inputs) {
+		t.Fatalf("inspection from original artifact: %+v", childInspect)
+	}
+	if receipt, err := db.Complete(ctx, tokenB, badInspection); err != nil || !receipt.Replayed || receipt.RunID != parentID {
+		t.Fatalf("original completion receipt: %+v, %v", receipt, err)
+	}
+	if _, err := db.Complete(ctx, tokenB, CompletionRequest{Lease: childInspect.LeaseRef,
+		Success: true, Branch: "report", Outputs: json.RawMessage(`{"grade":"pass"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	childReport := claim(tokenA, "report", 10)
+	if childReport == nil || childReport.RunID != childID || string(childReport.Inputs) != `{"count":1,"grade":"pass"}` {
+		t.Fatalf("report combined reused and new outputs: %+v", childReport)
+	}
+	if _, err := db.Complete(ctx, tokenA, CompletionRequest{Lease: childReport.LeaseRef,
+		Success: true, Outputs: json.RawMessage(`{"summary":"repaired"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := db.ExportRun(ctx, scope, parentID)
+	if err != nil || parent.Format != "workflow-runtime/run-report-v1" || parent.GeneratedBy != scope.Actor ||
+		parent.Detail.Run.State != "failed" || len(parent.Detail.RecentReruns) != 1 || parent.Detail.RecentReruns[0].RunID != childID {
+		t.Fatalf("source report: %+v, %v", parent, err)
+	}
+	child, err := db.ExportRun(ctx, scope, childID)
+	if err != nil || child.Detail.Run.State != "succeeded" || child.Detail.Run.Revision != 1 ||
+		child.Detail.InputDigest != parent.Detail.InputDigest || child.Detail.Rerun == nil || child.Detail.Rerun.Plan.ParentRunID != parentID {
+		t.Fatalf("derived report: %+v, %v", child, err)
+	}
+	for _, node := range parent.Detail.Nodes {
+		if node.Key == "inspect" {
+			if len(node.Attempts) != 1 {
+				t.Fatalf("original inspection attempts: %+v", node.Attempts)
+			}
+			attempt := node.Attempts[0]
+			if attempt.LogExcerpt == nil || *attempt.LogExcerpt != excerpt || attempt.LogSHA256 == nil ||
+				*attempt.LogSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(excerpt))) || attempt.ExecutionMS == nil || node.DependencyWaitMS == nil {
+				t.Fatalf("original inspection diagnostics: %+v", node)
+			}
+		}
+	}
+	for _, node := range child.Detail.Nodes {
+		switch node.Key {
+		case "extract", "aggregate":
+			if node.Artifact == nil || node.Artifact.RunID != parentID || len(node.Attempts) != 0 || node.DependencyWaitMS != nil {
+				t.Fatalf("reused node: %+v", node)
+			}
+		case "cleanup":
+			if node.State != "skipped" || len(node.Attempts) != 0 || node.ReusedFrom != nil {
+				t.Fatalf("re-evaluated failure branch: %+v", node)
+			}
+		case "report":
+			if node.Artifact == nil || node.Artifact.RunID != childID || len(node.Attempts) != 1 {
+				t.Fatalf("new artifact: %+v", node)
+			}
+		}
+	}
+	if _, err := db.ExportRun(ctx, foreign, childID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-workspace export: %v", err)
 	}
 }
 

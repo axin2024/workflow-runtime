@@ -9,12 +9,42 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/axin2024/workflow-runtime/internal/store"
 )
 
 func prepareRunControl(ctx context.Context, scope store.Scope, args []string) (func(*store.Store) (any, error), error) {
 	switch args[0] {
+	case "run-rerun-preview":
+		if len(args) != 4 {
+			return nil, errors.New("usage: workflow run-rerun-preview WORKSPACE ID NODE[,NODE...]")
+		}
+		id, err := positiveRunID(args[2])
+		if err != nil {
+			return nil, err
+		}
+		selection := strings.Split(args[3], ",")
+		return func(db *store.Store) (any, error) { return db.PreviewRerun(ctx, scope, id, selection) }, nil
+	case "run-rerun":
+		if len(args) != 5 {
+			return nil, errors.New("usage: workflow run-rerun WORKSPACE ID KEY NODE[,NODE...]")
+		}
+		id, err := positiveRunID(args[2])
+		if err != nil {
+			return nil, err
+		}
+		selection := strings.Split(args[4], ",")
+		return func(db *store.Store) (any, error) { return db.CreateRerun(ctx, scope, id, args[3], selection) }, nil
+	case "run-export":
+		if len(args) != 3 {
+			return nil, errors.New("usage: workflow run-export WORKSPACE ID")
+		}
+		id, err := positiveRunID(args[2])
+		if err != nil {
+			return nil, err
+		}
+		return func(db *store.Store) (any, error) { return db.ExportRun(ctx, scope, id) }, nil
 	case "run-cancel":
 		flags := flag.NewFlagSet("run-cancel", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)

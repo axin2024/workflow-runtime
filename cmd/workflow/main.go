@@ -41,6 +41,9 @@ const usage = `Usage:
   workflow trigger [--kind manual|external] [--revision N] [--logical-at RFC3339] WORKSPACE DAG KEY INPUTS.json
   workflow run WORKSPACE ID
   workflow run-cancel [--grace-seconds N] WORKSPACE ID KEY REASON
+  workflow run-rerun-preview WORKSPACE ID NODE[,NODE...]
+  workflow run-rerun WORKSPACE ID KEY NODE[,NODE...]
+  workflow run-export WORKSPACE ID
   workflow run-resolve WORKSPACE ID NODE RESOLUTION.json
   workflow execution-sweep [LIMIT]
   workflow schedule-put WORKSPACE DAG EXPECTED_GENERATION SCHEDULE.json

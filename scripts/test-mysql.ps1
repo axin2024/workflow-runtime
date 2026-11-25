@@ -201,6 +201,39 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
     }
     Write-Output 'Token-only workers executed four diamond nodes through HTTP. The result and skipped branch were read from MySQL.'
 
+    $badInput = Join-Path $fixture 'invalid-dispatch-rows.json'
+    [IO.File]::WriteAllText($badInput, '{"rows":1001,"source":"fixture"}')
+    $failedRun = & $binary trigger demo dispatch-report dispatch-rerun-demo $badInput | ConvertFrom-Json
+    Assert-NativeExit 'create the rerun source'
+    $env:WORKFLOW_WORKER_TOKEN = $workerA.token
+    $failure = & $binary worker --once --endpoint $apiOrigin | ConvertFrom-Json
+    Assert-NativeExit 'produce the original task failure'
+    if ($failure.run_id -ne $failedRun.run.id -or $failure.node -ne 'extract' -or $failure.state -ne 'failed') {
+        throw 'Unexpected rerun fixture failure'
+    }
+    $rerunPreview = & $binary run-rerun-preview demo $failedRun.run.id extract | ConvertFrom-Json
+    Assert-NativeExit 'preview a partial rerun'
+    $rerun = & $binary run-rerun demo $failedRun.run.id inspect-failure extract | ConvertFrom-Json
+    Assert-NativeExit 'register a partial rerun'
+    $rerunReplay = & $binary run-rerun demo $failedRun.run.id inspect-failure extract | ConvertFrom-Json
+    Assert-NativeExit 'replay the partial rerun request'
+    $newFailure = & $binary worker --once --endpoint $apiOrigin | ConvertFrom-Json
+    Assert-NativeExit 'execute the derived run'
+    $env:WORKFLOW_WORKER_TOKEN = $null
+    $sourceReport = & $binary run-export demo $failedRun.run.id | ConvertFrom-Json
+    Assert-NativeExit 'export the source run'
+    $derivedReport = & $binary run-export demo $rerun.run_id | ConvertFrom-Json
+    Assert-NativeExit 'export the derived run'
+    if ($rerunPreview.revision -ne 1 -or $rerunPreview.selected[0] -ne 'extract' -or !$rerunReplay.replayed -or
+        $rerunReplay.run_id -ne $rerun.run_id -or $newFailure.run_id -ne $rerun.run_id -or $newFailure.state -ne 'failed' -or
+        $sourceReport.format -ne 'workflow-runtime/run-report-v1' -or $sourceReport.detail.run.id -eq $derivedReport.detail.run.id -or
+        $sourceReport.detail.run.id -ne $derivedReport.detail.rerun.plan.parent_run_id -or
+        $sourceReport.detail.input_digest -ne $derivedReport.detail.input_digest -or
+        $sourceReport.detail.recent_reruns[0].run_id -ne $derivedReport.detail.run.id -or $derivedReport.detail.run.state -ne 'failed') {
+        throw 'Unexpected partial rerun history'
+    }
+    Write-Output 'CLI previewed, registered, replayed, and exported a partial rerun with separate source and derived reports.'
+
     $externalGraph = Join-Path $fixture 'external-action.json'
     [IO.File]::WriteAllText($externalGraph, @'
 {"key":"external-action","nodes":[

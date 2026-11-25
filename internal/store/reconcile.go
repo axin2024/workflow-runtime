@@ -127,7 +127,7 @@ func (s *Store) ResolveExternal(ctx context.Context, scope Scope, runID int64, k
 		}
 	}
 	record = ExternalResolution{
-		LeaseRef: LeaseRef{RunID: run.ID, Node: key, Epoch: task.epoch, OperationKey: operationKey(workspace, dag, run.TriggerKey, key)},
+		LeaseRef: LeaseRef{RunID: run.ID, Node: key, Epoch: task.epoch, OperationKey: run.operationKey(workspace, dag, key)},
 		Key:      request.Key, Actor: scope.Actor, Evidence: request.Evidence, State: request.State, ResolvedAt: now,
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO external_resolutions
