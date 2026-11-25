@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/golang-migrate/migrate/v4 v4.20.1
+	github.com/robfig/cron/v3 v3.0.1
 )
 
 require (

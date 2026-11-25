@@ -1,0 +1,11 @@
+{
+  "key": "hourly-dispatch",
+  "cron": "0 * * * *",
+  "timezone": "Asia/Shanghai",
+  "misfire": "catch_up",
+  "grace_seconds": 60,
+  "max_active_runs": 3,
+  "inputs": {"rows": 12, "source": "synthetic-harbor-shifts"},
+  "enabled": true,
+  "start_after": "2026-11-01T00:00:00+08:00"
+}

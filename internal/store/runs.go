@@ -37,6 +37,7 @@ type Run struct {
 	ID         int64           `json:"id"`
 	Workspace  string          `json:"workspace"`
 	DAG        string          `json:"dag"`
+	ScheduleID *int64          `json:"schedule_id,omitempty"`
 	Revision   uint64          `json:"revision"`
 	TriggerKey string          `json:"trigger_key"`
 	Kind       string          `json:"trigger_kind"`
@@ -88,16 +89,10 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 		}
 		request.LogicalAt = &logical
 	}
-	identity, err := json.Marshal(struct {
-		Kind      string          `json:"kind"`
-		Revision  uint64          `json:"revision"`
-		LogicalAt *time.Time      `json:"logical_at"`
-		Inputs    json.RawMessage `json:"inputs"`
-	}{request.Kind, request.Revision, request.LogicalAt, inputs})
+	digest, err := triggerDigest(request.Kind, request.Revision, request.LogicalAt, inputs)
 	if err != nil {
-		return TriggerResult{}, fmt.Errorf("encode trigger identity: %w", err)
+		return TriggerResult{}, err
 	}
-	digest := sha256.Sum256(identity)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return TriggerResult{}, err
@@ -111,8 +106,7 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	existing, _, previousDigest, err := readRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+`
-		FROM runs WHERE workspace_id = ? AND dag_id = ? AND trigger_key = ?`, workspace, dag, request.Key))
+	existing, previousDigest, err := runByTrigger(ctx, tx, workspace, dag, request.Key)
 	if err == nil {
 		if !bytes.Equal(previousDigest, digest[:]) {
 			if err := writeAudit(ctx, tx, workspace, dag, &existing.ID, scope.Actor, "trigger_conflict", map[string]string{
@@ -139,30 +133,11 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(inputs, &values); err != nil {
-		return TriggerResult{}, fmt.Errorf("decode workflow inputs: %w", err)
-	}
-	if err := workflow.ValidateValues("inputs", version.Graph.Definition.Inputs, values); err != nil {
+	if err := validateInputContract(inputs, version.Graph.Definition); err != nil {
 		return TriggerResult{}, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO runs
-		(workspace_id, dag_id, revision, trigger_kind, trigger_key, request_digest, input_values, logical_at, state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, UTC_TIMESTAMP(6)), 'queued')`,
-		workspace, dag, revision, request.Kind, request.Key, digest[:], string(inputs), request.LogicalAt)
+	id, err := insertRun(ctx, tx, workspace, dag, nil, version, request, inputs, digest, scope.Actor)
 	if err != nil {
-		return TriggerResult{}, fmt.Errorf("create run: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return TriggerResult{}, fmt.Errorf("read created run ID: %w", err)
-	}
-	if err := putNodes(ctx, tx, id, version.Graph.Definition); err != nil {
-		return TriggerResult{}, err
-	}
-	if err := writeAudit(ctx, tx, workspace, dag, &id, scope.Actor, "run_created", map[string]any{
-		"revision": revision, "trigger_kind": request.Kind, "request_digest": hex.EncodeToString(digest[:]),
-	}); err != nil {
 		return TriggerResult{}, err
 	}
 	run, _, _, err := readRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id = ?`, id))
@@ -202,14 +177,14 @@ func (s *Store) GetRun(ctx context.Context, scope Scope, id int64) (RunDetail, e
 	return RunDetail{Run: run, Version: version, Nodes: nodes}, tx.Commit()
 }
 
-const runColumns = `id, dag_id, revision, trigger_key, trigger_kind, logical_at,
+const runColumns = `id, dag_id, schedule_id, revision, trigger_key, trigger_kind, logical_at,
 	input_values, state, created_at, request_digest`
 
 func readRun(row *sql.Row) (Run, int64, []byte, error) {
 	var run Run
 	var dag int64
 	var inputs, digest []byte
-	err := row.Scan(&run.ID, &dag, &run.Revision, &run.TriggerKey, &run.Kind, &run.LogicalAt,
+	err := row.Scan(&run.ID, &dag, &run.ScheduleID, &run.Revision, &run.TriggerKey, &run.Kind, &run.LogicalAt,
 		&inputs, &run.State, &run.CreatedAt, &digest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Run{}, 0, nil, ErrNotFound
@@ -219,6 +194,57 @@ func readRun(row *sql.Row) (Run, int64, []byte, error) {
 	}
 	run.Inputs = inputs
 	return run, dag, digest, nil
+}
+
+func runByTrigger(ctx context.Context, tx *sql.Tx, workspace, dag int64, key string) (Run, []byte, error) {
+	run, _, digest, err := readRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+`
+		FROM runs WHERE workspace_id = ? AND dag_id = ? AND trigger_key = ?`, workspace, dag, key))
+	return run, digest, err
+}
+
+func triggerDigest(kind string, revision uint64, logicalAt *time.Time, inputs json.RawMessage) ([32]byte, error) {
+	identity, err := json.Marshal(struct {
+		Kind      string          `json:"kind"`
+		Revision  uint64          `json:"revision"`
+		LogicalAt *time.Time      `json:"logical_at"`
+		Inputs    json.RawMessage `json:"inputs"`
+	}{kind, revision, logicalAt, inputs})
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("encode trigger identity: %w", err)
+	}
+	return sha256.Sum256(identity), nil
+}
+
+func validateInputContract(inputs json.RawMessage, definition workflow.Definition) error {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(inputs, &values); err != nil {
+		return fmt.Errorf("decode workflow inputs: %w", err)
+	}
+	return workflow.ValidateValues("inputs", definition.Inputs, values)
+}
+
+func insertRun(ctx context.Context, tx *sql.Tx, workspace, dag int64, scheduleID *int64, version Version,
+	request TriggerRequest, inputs json.RawMessage, digest [32]byte, actor string) (int64, error) {
+	result, err := tx.ExecContext(ctx, `INSERT INTO runs
+		(workspace_id, dag_id, schedule_id, revision, trigger_kind, trigger_key, request_digest, input_values, logical_at, state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, UTC_TIMESTAMP(6)), 'queued')`,
+		workspace, dag, scheduleID, version.Revision, request.Kind, request.Key, digest[:], string(inputs), request.LogicalAt)
+	if err != nil {
+		return 0, fmt.Errorf("create run: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("read created run ID: %w", err)
+	}
+	if err := putNodes(ctx, tx, id, version.Graph.Definition); err != nil {
+		return 0, err
+	}
+	if err := writeAudit(ctx, tx, workspace, dag, &id, actor, "run_created", map[string]any{
+		"revision": version.Revision, "trigger_kind": request.Kind, "request_digest": hex.EncodeToString(digest[:]),
+	}); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func normalizedInputs(raw []byte) (json.RawMessage, error) {

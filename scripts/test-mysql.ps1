@@ -13,6 +13,7 @@ $database = "workflow_test_$key"
 $rootPassword = [guid]::NewGuid().ToString('N')
 $appPassword = [guid]::NewGuid().ToString('N')
 $server = $null
+$scanners = @()
 $passed = $false
 
 function Assert-NativeExit([string]$Operation) {
@@ -75,7 +76,7 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
 
     $migration = & $binary migrate | ConvertFrom-Json
     Assert-NativeExit 'CLI migrate'
-    if ($migration.schema_version -ne 1) { throw 'Wrong fixture schema version' }
+    if ($migration.schema_version -lt 2) { throw 'Unexpected fixture schema version' }
     & $binary workspace-create demo | Out-Null
     Assert-NativeExit 'CLI create workspace'
     $graph = & $binary publish demo 0 examples/diamond.json | ConvertFrom-Json
@@ -91,9 +92,43 @@ GRANT ALL PRIVILEGES ON $database.* TO 'workflow_test'@'127.0.0.1';
         throw 'Unexpected CLI response'
     }
     Write-Output 'CLI migration, workspace creation, publication, trigger deduplication, and run readback passed.'
+
+    $schedule = & $binary schedule-put demo dispatch-report 0 examples/dispatch-schedule.json | ConvertFrom-Json
+    Assert-NativeExit 'CLI save schedule'
+    $scanArguments = @('scheduler', '--once', '--at', '2026-11-01T03:00:00+08:00')
+    foreach ($suffix in @('a', 'b')) {
+        $env:WORKFLOW_ACTOR = "scanner-$suffix"
+        $scanners += Start-Process -FilePath $binary -ArgumentList $scanArguments -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $fixture "scan-$suffix.json") `
+            -RedirectStandardError (Join-Path $fixture "scan-$suffix.log")
+    }
+    foreach ($scanner in $scanners) {
+        if (!$scanner.WaitForExit(15000) -or $scanner.ExitCode -ne 0) { throw 'A scheduler process failed' }
+    }
+    $scheduledIDs = @(
+        foreach ($suffix in @('a', 'b')) {
+            $scan = Get-Content -Raw -LiteralPath (Join-Path $fixture "scan-$suffix.json") | ConvertFrom-Json
+            foreach ($outcome in $scan.outcomes) {
+                if ($outcome.schedule_id -eq $schedule.id) { $outcome.run_ids }
+            }
+        }
+    )
+    if ($scheduledIDs.Count -ne 3 -or @($scheduledIDs | Sort-Object -Unique).Count -ne 3) { throw 'Expected three distinct scheduled runs' }
+    $current = & $binary schedule-get demo dispatch-report hourly-dispatch | ConvertFrom-Json
+    Assert-NativeExit 'CLI read schedule'
+    if ($schedule.generation -ne 1 -or $current.id -ne $schedule.id -or $current.next_at -eq $schedule.next_at) {
+        throw 'The schedule cursor did not advance'
+    }
+    Write-Output 'Two scheduler CLI processes created exactly three distinct catch-up runs.'
     $passed = $true
 } finally {
     try {
+        foreach ($scanner in $scanners) {
+            if (!$scanner.HasExited) {
+                Stop-Process -Id $scanner.Id
+                $null = $scanner.WaitForExit(5000)
+            }
+        }
         if ($server -and !$server.HasExited) {
             $env:MYSQL_PWD = $rootPassword
             try {

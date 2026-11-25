@@ -8,16 +8,20 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/axin2024/workflow-runtime/internal/workflow"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	if len(os.Args) < 2 || os.Args[1] != "scheduler" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -31,7 +35,10 @@ const usage = `Usage:
   workflow publish WORKSPACE EXPECTED_REVISION DEFINITION.json
   workflow revision WORKSPACE DAG [REVISION]
   workflow trigger [--kind manual|external] [--revision N] [--logical-at RFC3339] WORKSPACE DAG KEY INPUTS.json
-  workflow run WORKSPACE ID`
+  workflow run WORKSPACE ID
+  workflow schedule-put WORKSPACE DAG EXPECTED_GENERATION SCHEDULE.json
+  workflow schedule-get WORKSPACE DAG SCHEDULE
+  workflow scheduler [--once] [--at RFC3339] [--interval DURATION] [--limit N]`
 
 func run(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 || (len(args) == 1 && (args[0] == "--help" || args[0] == "-h")) {

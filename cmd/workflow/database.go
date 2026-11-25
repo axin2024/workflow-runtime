@@ -27,6 +27,9 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		actor = "local-operator"
 	}
 	scope := store.Scope{Actor: actor}
+	if args[0] == "scheduler" {
+		return runScheduler(ctx, args[1:], dsn, actor, out, os.Stderr)
+	}
 	if len(args) > 1 {
 		scope.Workspace = args[1]
 	}
@@ -87,6 +90,24 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		}
 		operation = func(db *store.Store) (any, error) {
 			return db.GetRun(ctx, scope, id)
+		}
+	case "schedule-put":
+		if len(args) != 5 {
+			return errors.New("usage: workflow schedule-put WORKSPACE DAG EXPECTED_GENERATION SCHEDULE.json")
+		}
+		generation, spec, err := parseSchedule(args[3], args[4])
+		if err != nil {
+			return err
+		}
+		operation = func(db *store.Store) (any, error) {
+			return db.PutSchedule(ctx, scope, args[2], generation, spec)
+		}
+	case "schedule-get":
+		if len(args) != 4 {
+			return errors.New("usage: workflow schedule-get WORKSPACE DAG SCHEDULE")
+		}
+		operation = func(db *store.Store) (any, error) {
+			return db.GetSchedule(ctx, scope, args[2], args[3])
 		}
 	default:
 		return errors.New(usage)

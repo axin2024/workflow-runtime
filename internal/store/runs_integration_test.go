@@ -14,7 +14,8 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-func TestMySQLVersionAndTriggerIdentity(t *testing.T) {
+func openTestStore(t *testing.T) (*Store, string) {
+	t.Helper()
 	dsn := os.Getenv("WORKFLOW_TEST_MYSQL_DSN")
 	if dsn == "" {
 		t.Skip("set WORKFLOW_TEST_MYSQL_DSN to an isolated MySQL test database")
@@ -34,6 +35,11 @@ func TestMySQLVersionAndTriggerIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	return db, dsn
+}
+
+func TestMySQLVersionAndTriggerIdentity(t *testing.T) {
+	db, _ := openTestStore(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	if err := db.Ready(ctx); err != nil {
