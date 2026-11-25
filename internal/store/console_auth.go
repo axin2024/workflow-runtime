@@ -41,7 +41,7 @@ func (s *Store) GrantConsole(ctx context.Context, scope Scope, role ConsoleRole)
 	if role != ConsoleAuthor && role != ConsoleOperator && role != ConsoleViewer {
 		return ConsoleGrant{}, errors.New("console role must be author, operator, or viewer")
 	}
-	token, digest := newConsoleToken()
+	token, digest := newToken()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return ConsoleGrant{}, err
@@ -84,7 +84,7 @@ func (s *Store) StartConsoleSession(ctx context.Context, credential string) (str
 	if err != nil {
 		return "", err
 	}
-	token, sessionDigest := newConsoleToken()
+	token, sessionDigest := newToken()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return "", err
@@ -135,19 +135,27 @@ func (s *Store) EndConsoleSession(ctx context.Context, token string) error {
 	return err
 }
 
-func newConsoleToken() (string, [32]byte) {
+func newToken() (string, [32]byte) {
 	var secret [32]byte
 	rand.Read(secret[:])
 	return base64.RawURLEncoding.EncodeToString(secret[:]), sha256.Sum256(secret[:])
 }
 
 func consoleDigest(token string) ([32]byte, error) {
-	if len(token) != base64.RawURLEncoding.EncodedLen(32) {
+	digest, ok := tokenDigest(token)
+	if !ok {
 		return [32]byte{}, ErrConsoleUnauthorized
+	}
+	return digest, nil
+}
+
+func tokenDigest(token string) ([32]byte, bool) {
+	if len(token) != base64.RawURLEncoding.EncodedLen(32) {
+		return [32]byte{}, false
 	}
 	secret, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil || len(secret) != 32 {
-		return [32]byte{}, ErrConsoleUnauthorized
+		return [32]byte{}, false
 	}
-	return sha256.Sum256(secret), nil
+	return sha256.Sum256(secret), true
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 //go:embed migrations/*.sql
 var migrations embed.FS

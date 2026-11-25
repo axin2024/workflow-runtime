@@ -36,6 +36,8 @@ go run ./cmd/workflow run demo 1
 
 触发键在同一工作空间的同一工作流内唯一。调用方超时后可用原键和原请求重送，响应会返回已登记的运行。输入对象的字段顺序和空白不影响请求摘要。同一键改用其他输入、触发类型、显式版本或逻辑时刻时，命令返回冲突，并保存原请求和新请求的摘要。`--revision` 可明确选择历史版本，`--logical-at` 接受 RFC 3339 时间并按 UTC 保存。
 
+外部服务可以用工作流专属凭据通过 HTTP 提交运行，并按原请求键或运行号回读状态。 [外部触发 HTTP 接口](docs/trigger-api.md)
+
 ## 浏览器管理站
 
 初始化工作空间后，可签发浏览器登录凭据，在管理站发布 DAG、配置定时计划、选择历史补跑时刻、调整执行配额、诊断运行和导出报告。安装和角色说明见 [管理站指南](docs/console.md)。
@@ -110,3 +112,5 @@ go run ./cmd/workflow backfill-resume demo 1
 Windows 可用 `./scripts/test-mysql.ps1 -MySQLBin C:/path/to/mysql/bin` 启动独立的回环测试库。测试覆盖并发去重、历史版本、跨工作空间隔离、冲突审计、调度与补跑、租约失效接管、并行分支汇合、失败清理、取消和外部任务核对。脚本还用两个 Worker 身份经 HTTP 执行示例，随后将数据库备份恢复到另一个本机 MySQL 实例，并核对数据与历史回执。备份和上线切换操作见 [MySQL 备份、恢复与升级](docs/recovery.md)。
 
 也可准备专用测试库，库名以 `workflow_test_` 开头，将其连接串设为 `WORKFLOW_TEST_MYSQL_DSN` 后执行 `go test -count=1 -v ./...`。
+
+[贡献指南](CONTRIBUTING.md) · [Apache-2.0 许可证](LICENSE)

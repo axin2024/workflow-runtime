@@ -22,6 +22,8 @@ type Backend interface {
 	Renew(context.Context, string, store.RenewRequest) (store.LeaseRenewal, error)
 	Complete(context.Context, string, store.CompletionRequest) (store.CompletionReceipt, error)
 	AcknowledgeCancel(context.Context, string, store.LeaseRef) (store.CompletionReceipt, error)
+	ExternalTrigger(context.Context, string, store.ExternalTriggerRequest) (store.ExternalTriggerResult, error)
+	ExternalReceipt(context.Context, string, int64, string) (store.TriggerReceipt, error)
 }
 
 type claimResponse struct {
@@ -45,6 +47,7 @@ func Handler(backend Backend, logger *log.Logger) http.Handler {
 	mux.HandleFunc("POST "+prefix+"renew", operation(logger, backend.Renew))
 	mux.HandleFunc("POST "+prefix+"complete", operation(logger, backend.Complete))
 	mux.HandleFunc("POST "+prefix+"cancel-ack", operation(logger, backend.AcknowledgeCancel))
+	registerTriggers(mux, backend, logger)
 	return mux
 }
 

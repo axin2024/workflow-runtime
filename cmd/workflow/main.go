@@ -41,6 +41,8 @@ const usage = `Usage:
   workflow publish WORKSPACE EXPECTED_REVISION DEFINITION.json
   workflow revision WORKSPACE DAG [REVISION]
   workflow trigger [--kind manual|external] [--revision N] [--logical-at RFC3339] WORKSPACE DAG KEY INPUTS.json
+  workflow trigger-grant WORKSPACE DAG ACTOR
+  workflow trigger-revoke WORKSPACE DAG ACTOR
   workflow run WORKSPACE ID
   workflow run-cancel [--grace-seconds N] WORKSPACE ID KEY REASON
   workflow run-rerun-preview WORKSPACE ID NODE[,NODE...]

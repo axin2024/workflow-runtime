@@ -34,6 +34,17 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 		scope.Workspace = args[1]
 	}
 	switch args[0] {
+	case "trigger-grant", "trigger-revoke":
+		if len(args) != 4 {
+			return errors.New("usage: workflow trigger-grant|trigger-revoke WORKSPACE DAG ACTOR")
+		}
+		scope.Actor = args[3]
+		operation = func(db *store.Store) (any, error) {
+			if args[0] == "trigger-grant" {
+				return db.GrantTrigger(ctx, scope, args[2])
+			}
+			return map[string]string{"workspace": scope.Workspace, "dag": args[2], "actor": scope.Actor}, db.RevokeTrigger(ctx, scope, args[2])
+		}
 	case "console-grant":
 		if len(args) != 4 {
 			return errors.New("usage: workflow console-grant WORKSPACE ACTOR author|operator|viewer")

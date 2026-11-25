@@ -2,6 +2,8 @@
 
 `workflow worker-api` 在回环地址提供接口。异机 Worker 通过同机反向代理的 HTTPS 地址连接，例如 `https://workflow.example.org`。反向代理转发 `Authorization`，并保持接口路径。`GET /healthz` 返回 `204`，表示 HTTP 服务已启动。
 
+同一服务的 `/v1/triggers` 为集成方提供单独签发的工作流凭据和提交回执。 [外部触发 HTTP 接口](trigger-api.md)
+
 每个写请求都使用 `Content-Type: application/json` 和 `Authorization: Bearer <token>`。身份由令牌查出，授权项为工作空间内的队列和任务类型组合。数据库仅保存令牌摘要。每个 Worker 身份可以配置 1 到 64 个活跃租约，内置 Worker 进程每次执行一个节点。
 
 ## 领取任务

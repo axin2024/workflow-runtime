@@ -205,6 +205,90 @@ function Test-DemoFailover([string]$Endpoint) {
     Write-Output "Public demo run=$($seed.run.id) input_sha256=$($export.detail.input_digest) output_sha256=$($report.output_digest). Worker A expired, Worker B completed at epoch 2, the old completion was rejected, and report executed once."
 }
 
+function Test-ExternalTriggers([string]$Endpoint, [string]$WorkerToken) {
+    foreach ($workspace in @('ingress-test', 'ingress-foreign')) {
+        & $binary workspace-create $workspace | Out-Null
+        Assert-NativeExit 'create external trigger workspace'
+        & $binary publish $workspace 0 examples/diamond.json | Out-Null
+        Assert-NativeExit 'publish workflow for external triggers'
+    }
+    $owner = & $binary trigger-grant ingress-test dispatch-report report-service | ConvertFrom-Json
+    Assert-NativeExit 'grant trigger credential'
+    $peer = & $binary trigger-grant ingress-test dispatch-report other-service | ConvertFrom-Json
+    Assert-NativeExit 'grant peer trigger credential'
+    $foreign = & $binary trigger-grant ingress-foreign dispatch-report report-service | ConvertFrom-Json
+    Assert-NativeExit 'grant same actor in another workspace'
+    $url = "$Endpoint/v1/triggers"
+    $headers = @{Authorization = "Bearer $($owner.token)"}
+    $request = '{"key":"workflow/weekly:2026-W44","inputs":{"source":"trigger-fixture","rows":12}}'
+    $created = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' -Body $request
+    $run = $created.Content | ConvertFrom-Json
+    $runID = $run.run.id
+    if ($created.StatusCode -ne 202 -or $run.replayed -or $run.run.dag -ne 'dispatch-report' -or $run.run.revision -ne 1 -or
+        $run.run.state -ne 'queued' -or $run.run.PSObject.Properties.Name -contains 'inputs' -or
+        $created.Headers.Location[0] -ne "/v1/triggers/$runID") { throw 'External trigger did not return a narrow committed receipt' }
+    $lookup = Invoke-RestMethod -Uri "$url/$runID" -Headers $headers
+    $byKey = Invoke-RestMethod -Uri "$url`?key=workflow%2Fweekly%3A2026-W44" -Headers $headers
+    $replay = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' `
+        -Body '{"key":"workflow/weekly:2026-W44","inputs":{"rows":12,"source":"trigger-fixture"}}'
+    $retried = $replay.Content | ConvertFrom-Json
+    if ($lookup.id -ne $runID -or $byKey.id -ne $runID -or $replay.StatusCode -ne 200 -or !$retried.replayed -or $retried.run.id -ne $runID) {
+        throw 'External trigger could not recover its receipt by key, run ID, and replay'
+    }
+    $conflict = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' -SkipHttpErrorCheck `
+        -Body $request.Replace('"rows":12', '"rows":13')
+    $wrongType = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' -SkipHttpErrorCheck `
+        -Body '{"key":"wrong-type","inputs":{"rows":"12","source":"test"}}'
+    $override = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' -SkipHttpErrorCheck `
+        -Body '{"key":"override","workspace":"ingress-foreign","dag":"other","inputs":{}}'
+    if ($conflict.StatusCode -ne 409 -or ($conflict.Content | ConvertFrom-Json).run_id -ne $runID -or
+        $wrongType.StatusCode -ne 400 -or ($wrongType.Content | ConvertFrom-Json).field -ne 'inputs.rows' -or $override.StatusCode -ne 400) {
+        throw 'External trigger accepted conflicting, invalid, or forged scope parameters'
+    }
+    foreach ($credential in @($peer, $foreign)) {
+        $unowned = Invoke-WebRequest -Uri "$url/$runID" -Headers @{Authorization = "Bearer $($credential.token)"} -SkipHttpErrorCheck
+        if ($unowned.StatusCode -ne 404) { throw 'A different actor or workspace read the trigger receipt' }
+    }
+    $sameKey = Invoke-WebRequest -Method Post -Uri $url -Headers @{Authorization = "Bearer $($peer.token)"} `
+        -ContentType 'application/json' -Body $request -SkipHttpErrorCheck
+    $workerDenied = Invoke-WebRequest -Uri "$url/$runID" -Headers @{Authorization = "Bearer $WorkerToken"} -SkipHttpErrorCheck
+    $triggerDenied = Invoke-WebRequest -Method Post -Uri "$Endpoint/v1/worker/claim" -Headers $headers `
+        -ContentType 'application/json' -Body '{"tasks":["extract"],"lease_seconds":1}' -SkipHttpErrorCheck
+    if ($sameKey.StatusCode -ne 409 -or ($sameKey.Content | ConvertFrom-Json).PSObject.Properties.Name -contains 'run_id' -or
+        $workerDenied.StatusCode -ne 401 -or $triggerDenied.StatusCode -ne 401) { throw 'External triggers crossed a credential boundary' }
+
+    $concurrentRequest = $request.Replace('workflow/weekly:2026-W44', 'parallel-delivery')
+    $concurrent = @(1..4 | ForEach-Object -ThrottleLimit 4 -Parallel {
+        $response = Invoke-WebRequest -Method Post -Uri $using:url -Headers $using:headers -ContentType 'application/json' -Body $using:concurrentRequest
+        $result = $response.Content | ConvertFrom-Json
+        [pscustomobject]@{status = $response.StatusCode; id = $result.run.id; replayed = $result.replayed}
+    })
+    if ($concurrent.Count -ne 4 -or @($concurrent | Where-Object status -eq 202).Count -ne 1 -or
+        @($concurrent | Where-Object replayed).Count -ne 3 -or @($concurrent.id | Sort-Object -Unique).Count -ne 1) {
+        throw 'Concurrent webhook deliveries allocated multiple runs'
+    }
+    $history = & $binary run ingress-test $runID | ConvertFrom-Json
+    Assert-NativeExit 'read audited external run through CLI'
+    if ($history.run.trigger_kind -ne 'external' -or @($history.audit | Where-Object { $_.actor -eq 'report-service' }).Count -ne 2) {
+        throw 'The external actor was missing from creation or conflict audit'
+    }
+    & $binary run-cancel ingress-test $runID external-test-stop 'Requested by operator' | Out-Null
+    Assert-NativeExit 'cancel external run as operator'
+    & $binary trigger-revoke ingress-test dispatch-report report-service | Out-Null
+    Assert-NativeExit 'revoke external trigger credential'
+    $revoked = Invoke-WebRequest -Uri "$url/$runID" -Headers $headers -SkipHttpErrorCheck
+    $revokedPost = Invoke-WebRequest -Method Post -Uri $url -Headers $headers -ContentType 'application/json' -Body $request -SkipHttpErrorCheck
+    $rotated = & $binary trigger-grant ingress-test dispatch-report report-service | ConvertFrom-Json
+    Assert-NativeExit 'reissue trigger credential for the same actor'
+    $afterRotation = Invoke-RestMethod -Uri "$url/$runID" -Headers @{Authorization = "Bearer $($rotated.token)"}
+    $oldStillDenied = Invoke-WebRequest -Uri "$url/$runID" -Headers $headers -SkipHttpErrorCheck
+    if ($revoked.StatusCode -ne 401 -or $revokedPost.StatusCode -ne 401 -or $oldStillDenied.StatusCode -ne 401 -or
+        $afterRotation.id -ne $runID -or $afterRotation.state -ne 'canceled' -or !$afterRotation.finished_at) {
+        throw 'Credential revoke, rotation, or persisted state readback failed'
+    }
+    Write-Output 'External trigger HTTP receipts survived replay, concurrent delivery, cancellation and credential rotation. Actor, tenant, and worker boundaries passed.'
+}
+
 Push-Location -LiteralPath $project
 try {
     $server = Start-FixtureDatabase $fixture $port $database workflow_test $appPassword $rootPassword
@@ -310,6 +394,7 @@ try {
     }
     if (!$healthy) { throw 'Worker API failed its health check' }
     Test-DemoFailover $apiOrigin
+    Test-ExternalTriggers $apiOrigin $workerA.token
     $fixtureDSN = $env:WORKFLOW_MYSQL_DSN
     $env:WORKFLOW_MYSQL_DSN = $null
     $env:WORKFLOW_TEST_MYSQL_DSN = $null

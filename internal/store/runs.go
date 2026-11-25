@@ -96,20 +96,27 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 	if err := scope.validate(); err != nil {
 		return TriggerResult{}, err
 	}
-	if !identifier.MatchString(request.DAG) || !triggerKey.MatchString(request.Key) {
-		return TriggerResult{}, errors.New("invalid workflow or trigger key")
+	if !identifier.MatchString(request.DAG) {
+		return TriggerResult{}, &workflow.Issue{Path: "dag", Message: "invalid workflow key"}
 	}
 	if request.Kind != "manual" && request.Kind != "external" {
 		return TriggerResult{}, errors.New("trigger kind must be manual or external")
 	}
+	return s.trigger(ctx, scope, request, nil)
+}
+
+func (s *Store) trigger(ctx context.Context, scope Scope, request TriggerRequest, credential *[32]byte) (TriggerResult, error) {
+	if !triggerKey.MatchString(request.Key) {
+		return TriggerResult{}, &workflow.Issue{Path: "key", Message: "invalid trigger key"}
+	}
 	inputs, err := normalizedInputs(request.Inputs)
 	if err != nil {
-		return TriggerResult{}, err
+		return TriggerResult{}, &workflow.Issue{Path: "inputs", Message: err.Error()}
 	}
 	if request.LogicalAt != nil {
 		logical := request.LogicalAt.UTC().Truncate(time.Microsecond)
 		if logical.Year() < 1000 || logical.Year() > 9999 {
-			return TriggerResult{}, errors.New("logical time is outside the supported range")
+			return TriggerResult{}, &workflow.Issue{Path: "logical_at", Message: "logical time is outside the supported range"}
 		}
 		request.LogicalAt = &logical
 	}
@@ -122,16 +129,38 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 		return TriggerResult{}, err
 	}
 	defer tx.Rollback()
-	workspace, err := workspaceID(ctx, tx, scope.Workspace)
-	if err != nil {
-		return TriggerResult{}, err
+	var identityID, workspace, dag int64
+	var active uint64
+	if credential != nil {
+		identity, authorizationErr := lockTriggerIdentity(ctx, tx, *credential)
+		if authorizationErr != nil {
+			return TriggerResult{}, authorizationErr
+		}
+		identityID, workspace, dag = identity.id, identity.workspace, identity.dag
+		scope, request.DAG = identity.scope, identity.dagKey
+		err = tx.QueryRowContext(ctx, `SELECT active_revision FROM dags WHERE id = ? FOR UPDATE`, dag).Scan(&active)
+	} else {
+		workspace, err = workspaceID(ctx, tx, scope.Workspace)
+		if err != nil {
+			return TriggerResult{}, err
+		}
+		dag, active, err = findDAG(ctx, tx, workspace, request.DAG, true)
 	}
-	dag, active, err := findDAG(ctx, tx, workspace, request.DAG, true)
 	if err != nil {
 		return TriggerResult{}, err
 	}
 	existing, previousDigest, err := runByTrigger(ctx, tx, workspace, dag, request.Key)
 	if err == nil {
+		if identityID != 0 {
+			var owned bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM trigger_receipts WHERE run_id = ? AND identity_id = ?)`,
+				existing.ID, identityID).Scan(&owned); err != nil {
+				return TriggerResult{}, err
+			}
+			if !owned {
+				return TriggerResult{}, ErrTriggerKeyUnavailable
+			}
+		}
 		if !bytes.Equal(previousDigest, digest[:]) {
 			if err := writeAudit(ctx, tx, workspace, dag, &existing.ID, scope.Actor, "trigger_conflict", map[string]string{
 				"original_digest": hex.EncodeToString(previousDigest), "received_digest": hex.EncodeToString(digest[:]),
@@ -163,6 +192,13 @@ func (s *Store) Trigger(ctx context.Context, scope Scope, request TriggerRequest
 	id, err := insertRun(ctx, tx, workspace, dag, nil, version, request, inputs, digest, scope.Actor)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	if identityID != 0 {
+		_, err := tx.ExecContext(ctx, `INSERT INTO trigger_receipts (run_id, workspace_id, dag_id, identity_id) VALUES (?, ?, ?, ?)`,
+			id, workspace, dag, identityID)
+		if err != nil {
+			return TriggerResult{}, fmt.Errorf("store trigger receipt: %w", err)
+		}
 	}
 	run, _, _, err := readRun(tx.QueryRowContext(ctx, `SELECT `+runColumns+` FROM runs WHERE id = ?`, id))
 	if err != nil {
