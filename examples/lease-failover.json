@@ -1,0 +1,59 @@
+{
+  "key": "lease-failover",
+  "inputs": { "rows": "integer", "source": "string" },
+  "nodes": [
+    {
+      "key": "extract",
+      "task": "extract",
+      "queue": "failover",
+      "timeout_seconds": 30,
+      "input": {
+        "rows": { "type": "integer", "input": "rows" },
+        "source": { "type": "string", "input": "source" }
+      },
+      "output": { "records": "array" },
+      "retry": { "max_attempts": 1 },
+      "effect": "none"
+    },
+    {
+      "key": "aggregate",
+      "task": "aggregate",
+      "queue": "failover",
+      "timeout_seconds": 120,
+      "depends_on": [{ "node": "extract", "when": "succeeded" }],
+      "input": { "records": { "type": "array", "node": "extract", "field": "records" } },
+      "output": { "count": "integer" },
+      "retry": { "max_attempts": 2 },
+      "effect": "none"
+    },
+    {
+      "key": "inspect",
+      "task": "inspect",
+      "queue": "failover",
+      "timeout_seconds": 45,
+      "depends_on": [{ "node": "extract", "when": "succeeded" }],
+      "input": { "records": { "type": "array", "node": "extract", "field": "records" } },
+      "output": { "grade": "string" },
+      "branches": ["report", "manual"],
+      "retry": { "max_attempts": 1 },
+      "effect": "none"
+    },
+    {
+      "key": "report",
+      "task": "report",
+      "queue": "failover",
+      "timeout_seconds": 60,
+      "depends_on": [
+        { "node": "inspect", "when": "branch", "branch": "report" },
+        { "node": "aggregate", "when": "succeeded" }
+      ],
+      "input": {
+        "count": { "type": "number", "node": "aggregate", "field": "count" },
+        "grade": { "type": "string", "node": "inspect", "field": "grade" }
+      },
+      "output": { "summary": "string" },
+      "retry": { "max_attempts": 1 },
+      "effect": "idempotent"
+    }
+  ]
+}

@@ -4,6 +4,12 @@ Workflow Runtime 是一个基于 Go 和 MySQL 的自托管工作流编排平台�
 
 当前版本提供定义校验、MySQL 版本发布、手工和外部触发、定时调度、历史补跑、Worker 执行、运行取消、外部动作核对、失败节点部分重跑和运行报告。参见[产品需求](docs/requirements/01-产品总览-prd.md)和[验收场景](docs/requirements/04-验收与运营-prd.md)。
 
+Workflow Runtime is a self-hosted Go and MySQL engine for versioned DAGs, time-zone-aware scheduling, and lease-based workers. The console exposes dependency decisions, attempts, backfills, and partial reruns.
+
+## 快速开始
+
+用 Go 1.26 和 MySQL 8.4 启动本机应用，执行 `workflow demo-init` 导入样例，再用两个 Worker 演练一次任务接管。在浏览器管理站可核对旧租约拒绝回执对应的尝试、最终结果和依赖时间线。 [自托管快速开始](docs/quickstart.md) · [样例数据](examples/README.md)
+
 ## 校验工作流
 
 ```sh

@@ -29,12 +29,14 @@ func main() {
 }
 
 func longRunningCommand(name string) bool {
-	return name == "scheduler" || name == "worker-api" || name == "worker" || name == "console"
+	return name == "scheduler" || name == "worker-api" || name == "worker" || name == "console" || name == "demo-worker"
 }
 
 const usage = `Usage:
   workflow validate DEFINITION.json [INPUTS.json]
   workflow migrate
+  workflow demo-init
+  workflow demo-worker [--endpoint URL] [--lease-seconds N]
   workflow workspace-create WORKSPACE
   workflow publish WORKSPACE EXPECTED_REVISION DEFINITION.json
   workflow revision WORKSPACE DAG [REVISION]
@@ -72,6 +74,10 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	switch args[0] {
+	case "demo-init":
+		return runDemoInit(ctx, args[1:], out, os.Stderr)
+	case "demo-worker":
+		return runDemoWorker(ctx, args[1:], os.Stdin, out, os.Stderr)
 	case "worker":
 		return runWorker(ctx, args[1:], out, os.Stderr)
 	case "worker-api":

@@ -116,6 +116,95 @@ function Stop-FixtureDatabase([Diagnostics.Process]$Process, [string[]]$Options,
     }
 }
 
+function Test-DemoFailover([string]$Endpoint) {
+    $seed = & $binary demo-init | ConvertFrom-Json
+    Assert-NativeExit 'initialize the bundled demo'
+    $reseed = & $binary demo-init | ConvertFrom-Json
+    Assert-NativeExit 'repeat demo initialization'
+    if ($seed.replayed -or !$reseed.replayed -or $seed.run.id -ne $reseed.run.id -or $seed.run.revision -ne 1) {
+        throw 'Repeated demo setup did not reuse its original run'
+    }
+    $demoA = & $binary worker-register workflow-demo worker-a 1 failover:aggregate | ConvertFrom-Json
+    Assert-NativeExit 'register demo Worker A'
+    $demoB = & $binary worker-register workflow-demo worker-b 1 failover:extract failover:aggregate failover:inspect failover:report | ConvertFrom-Json
+    Assert-NativeExit 'register demo Worker B'
+    $sourceDSN = $env:WORKFLOW_MYSQL_DSN
+    $sourceTestDSN = $env:WORKFLOW_TEST_MYSQL_DSN
+    $sourceMySQLPassword = $env:MYSQL_PWD
+    $pausedWorker = $null
+    try {
+        $env:WORKFLOW_MYSQL_DSN = $null
+        $env:WORKFLOW_TEST_MYSQL_DSN = $null
+        $env:MYSQL_PWD = $null
+        $env:WORKFLOW_WORKER_TOKEN = $demoB.token
+        $first = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+        Assert-NativeExit 'execute the sample extract as Worker B'
+        if ($first.run_id -ne $seed.run.id -or $first.node -ne 'extract') { throw 'Unexpected initial demo task' }
+
+        $start = [Diagnostics.ProcessStartInfo]::new($binary)
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in @('demo-worker', '--endpoint', $Endpoint, '--lease-seconds', '6')) { $start.ArgumentList.Add($argument) }
+        $start.Environment['WORKFLOW_WORKER_TOKEN'] = $demoA.token
+        $pausedWorker = [Diagnostics.Process]::Start($start)
+        $paused = $pausedWorker.StandardOutput.ReadLineAsync().WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult() | ConvertFrom-Json
+        if ($paused.phase -ne 'paused' -or $paused.run_id -ne $seed.run.id -or $paused.node -ne 'aggregate' -or $paused.epoch -ne 1) {
+            throw 'Worker A did not pause with the original aggregate lease'
+        }
+        $branch = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+        Assert-NativeExit 'execute the independent branch while Worker A is paused'
+        $beforeExpiry = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+        Assert-NativeExit 'observe the join before the aggregate lease expires'
+        if ($branch.node -ne 'inspect' -or $null -ne $beforeExpiry) { throw 'The report became available before both branches completed' }
+
+        $limit = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            Start-Sleep -Milliseconds 150
+            $takeover = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+            Assert-NativeExit 'take over the paused demo task'
+        } until ($takeover -or $limit.Elapsed.TotalSeconds -ge 12)
+        if ($takeover.run_id -ne $paused.run_id -or $takeover.node -ne $paused.node -or $takeover.epoch -ne 2 -or
+            $takeover.operation_key -ne $paused.operation_key -or $takeover.state -ne 'succeeded') {
+            throw 'Worker B did not complete the same aggregate node under a new lease'
+        }
+        $pausedWorker.StandardInput.WriteLine()
+        $pausedWorker.StandardInput.Close()
+        $resumed = $pausedWorker.StandardOutput.ReadLineAsync().WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult() | ConvertFrom-Json
+        if (!$pausedWorker.WaitForExit(5000) -or $pausedWorker.ExitCode -ne 0 -or
+            $resumed.phase -ne 'resumed' -or $resumed.epoch -ne 1 -or $resumed.operation_key -ne $paused.operation_key -or
+            $resumed.outcome -ne 'lease_lost') { throw 'The old aggregate completion was not rejected' }
+        $join = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+        Assert-NativeExit 'execute the report join after takeover'
+        $extra = & $binary worker --once --endpoint $Endpoint | ConvertFrom-Json
+        Assert-NativeExit 'verify no second report claim'
+        if ($join.node -ne 'report' -or $join.epoch -ne 1 -or $null -ne $extra) { throw 'Expected exactly one report execution' }
+    } finally {
+        $env:WORKFLOW_WORKER_TOKEN = $null
+        $env:WORKFLOW_MYSQL_DSN = $sourceDSN
+        $env:WORKFLOW_TEST_MYSQL_DSN = $sourceTestDSN
+        $env:MYSQL_PWD = $sourceMySQLPassword
+        if ($pausedWorker) {
+            if (!$pausedWorker.HasExited) { $pausedWorker.Kill(); $null = $pausedWorker.WaitForExit(5000) }
+            $pausedWorker.Dispose()
+        }
+    }
+    $export = & $binary run-export workflow-demo $seed.run.id | ConvertFrom-Json
+    Assert-NativeExit 'read the demo report from MySQL'
+    $aggregate = $export.detail.nodes | Where-Object key -eq aggregate
+    $report = $export.detail.nodes | Where-Object key -eq report
+    if ($export.detail.run.state -ne 'succeeded' -or $aggregate.attempts.Count -ne 2 -or
+        $aggregate.attempts[0].worker -ne 'worker-a' -or $aggregate.attempts[0].failure_code -ne 'lease_expired' -or
+        $aggregate.attempts[1].worker -ne 'worker-b' -or $aggregate.attempts[1].state -ne 'succeeded' -or
+        $report.attempts.Count -ne 1 -or $report.outputs.summary -ne '12 dispatch records (passed)' -or
+        @($report.dependencies | Where-Object status -eq satisfied).Count -ne 2) {
+        throw 'MySQL did not retain both attempts or exactly one report with its two dependency decisions'
+    }
+    Write-Output "Public demo run=$($seed.run.id) input_sha256=$($export.detail.input_digest) output_sha256=$($report.output_digest). Worker A expired, Worker B completed at epoch 2, the old completion was rejected, and report executed once."
+}
+
 Push-Location -LiteralPath $project
 try {
     $server = Start-FixtureDatabase $fixture $port $database workflow_test $appPassword $rootPassword
@@ -220,6 +309,7 @@ try {
         }
     }
     if (!$healthy) { throw 'Worker API failed its health check' }
+    Test-DemoFailover $apiOrigin
     $fixtureDSN = $env:WORKFLOW_MYSQL_DSN
     $env:WORKFLOW_MYSQL_DSN = $null
     $env:WORKFLOW_TEST_MYSQL_DSN = $null
