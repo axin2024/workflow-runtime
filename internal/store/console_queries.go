@@ -44,21 +44,21 @@ func (s *Store) ListWorkflows(ctx context.Context, scope Scope, after string) ([
 }
 
 type RunFilter struct {
-	DAG     string
-	State   string
-	From    *time.Time
-	Through *time.Time
-	Before  int64
+	DAG     string     `json:"dag,omitempty"`
+	State   string     `json:"state,omitempty"`
+	From    *time.Time `json:"from,omitempty"`
+	Through *time.Time `json:"through,omitempty"`
+	Before  int64      `json:"before,omitempty"`
 }
 
 type RunSummary struct {
-	ID         int64
-	DAG        string
-	Revision   uint64
-	Kind       string
-	State      string
-	CreatedAt  time.Time
-	FinishedAt *time.Time
+	ID         int64      `json:"id"`
+	DAG        string     `json:"dag"`
+	Revision   uint64     `json:"revision"`
+	Kind       string     `json:"kind"`
+	State      string     `json:"state"`
+	CreatedAt  time.Time  `json:"created_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 func (s *Store) ListRuns(ctx context.Context, scope Scope, filter RunFilter) ([]RunSummary, error) {
@@ -99,7 +99,7 @@ func (s *Store) ListRuns(ctx context.Context, scope Scope, filter RunFilter) ([]
 		return nil, err
 	}
 	defer rows.Close()
-	var list []RunSummary
+	list := make([]RunSummary, 0)
 	for rows.Next() {
 		var item RunSummary
 		if err := rows.Scan(&item.ID, &item.DAG, &item.Revision, &item.Kind, &item.State, &item.CreatedAt, &item.FinishedAt); err != nil {

@@ -21,6 +21,7 @@ type page struct {
 	Auth            session
 	Problem, Notice string
 	Next            string
+	ExportURL       string
 	Workflows       []store.WorkflowSummary
 	Runs            []store.RunSummary
 	Filters         url.Values

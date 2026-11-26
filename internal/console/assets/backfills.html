@@ -15,8 +15,9 @@
   <a class="back" href="/backfills">← 历史补跑</a>
   <header class="page-head" data-batch-id="{{$batch.ID}}"><div><h1>{{.Title}} <span class="status {{$batch.State}}">{{backfillState $batch.State}}</span></h1>
     <p><a href="/workflows/{{$batch.DAG}}/schedules/{{$batch.Schedule}}">{{$batch.DAG}} / {{$batch.Schedule}}</a> · <a href="/workflows/{{$batch.DAG}}?revision={{$batch.Revision}}">v{{$batch.Revision}}</a></p></div>
-    {{if and .Auth.CanOperate (eq $batch.State "confirmed")}}<form method="post" action="/backfills/{{$batch.ID}}/resume">
-      <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><button class="primary" type="submit">继续登记</button></form>{{end}}
+    <div class="actions"><a class="button secondary" href="/backfills/{{$batch.ID}}/report.json">导出批次回执</a>
+      {{if and .Auth.CanOperate (eq $batch.State "confirmed")}}<form method="post" action="/backfills/{{$batch.ID}}/resume">
+        <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><button class="primary" type="submit">继续登记</button></form>{{end}}</div>
   </header>
   <dl class="panel run-summary"><div><dt>业务时区</dt><dd>{{$batch.Timezone}}</dd></div>
     <div><dt>起始 (UTC)</dt><dd>{{date $batch.From}}</dd></div><div><dt>结束 (UTC)</dt><dd>{{date $batch.Through}}</dd></div>

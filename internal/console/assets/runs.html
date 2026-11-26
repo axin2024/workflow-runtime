@@ -1,5 +1,6 @@
 {{define "runs"}}
-  <header class="page-head"><div><h1>运行记录</h1><p>跟踪工作流执行、排队与失败处置。</p></div><a class="button secondary" href="/workflows">查看工作流</a></header>
+  <header class="page-head"><div><h1>运行记录</h1><p>跟踪工作流执行、排队与失败处置。</p></div>
+    <div class="actions">{{if .ExportURL}}<a class="button secondary" href="{{.ExportURL}}">导出当前页</a>{{end}}<a class="button secondary" href="/workflows">查看工作流</a></div></header>
   <form method="get" action="/" class="panel padded filters" aria-label="运行筛选">
     <label>工作流键<input name="dag" placeholder="dispatch-report" value="{{.Filters.Get "dag"}}"></label>
     <label>状态<select name="state"><option value="">全部状态</option>{{range .States}}<option value="{{.}}"{{if eq . ($.Filters.Get "state")}} selected{{end}}>{{status .}}</option>{{end}}</select></label>

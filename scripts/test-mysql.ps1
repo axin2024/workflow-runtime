@@ -343,7 +343,7 @@ try {
         Assert-NativeExit 'previous CLI migrate'
         $previousSchema = $previousMigration.schema_version
         switch ($previousSchema) {
-            2 {
+            { $_ -in @(2, 11) } {
                 & $PreviousCLI workspace-create upgrade | Out-Null
                 Assert-NativeExit 'previous CLI create workspace'
                 $previousGraph = & $PreviousCLI publish upgrade 0 examples/diamond.json | ConvertFrom-Json
@@ -356,7 +356,7 @@ try {
                 if ($previousRun.Count -ne 1) { throw 'Expected one pre-upgrade scheduled run' }
             }
             10 { $previousCallbacks = New-PreviousCallbackFixture $PreviousCLI }
-            default { throw 'Previous CLI must use schema 2 or 10' }
+            default { throw 'Previous CLI must use schema 2, 10 or 11' }
         }
     }
     go test -count=1 -v ./...
@@ -373,7 +373,7 @@ try {
     $migration = & $binary migrate | ConvertFrom-Json
     Assert-NativeExit 'CLI migrate'
     if ($migration.schema_version -lt 3) { throw 'Unexpected fixture schema version' }
-    if ($previousSchema -eq 2) {
+    if ($previousSchema -in @(2, 11)) {
         $oldRun = & $binary run upgrade $previousRun[0] | ConvertFrom-Json
         Assert-NativeExit 'read scheduled run after schema upgrade'
         $oldPreview = & $binary backfill-preview upgrade dispatch-report hourly-dispatch 1 '2026-11-01T01:00:00+08:00' '2026-11-01T03:00:00+08:00' | ConvertFrom-Json
@@ -383,7 +383,7 @@ try {
             $oldPreview.items[0].state -ne 'already_registered' -or $oldPreview.items[0].baseline_run_id -ne $previousRun[0]) {
             throw 'Schema upgrade changed the existing scheduled occurrence'
         }
-        Write-Output 'Schema 2 data survived the upgrade and was found as the existing backfill baseline.'
+        Write-Output "Previous schema $previousSchema data survived the upgrade and was found as the existing backfill baseline."
     }
     if ($previousSchema -eq 10) {
         $oldCallback = & $binary callback-status upgrade dispatch-report legacy-caller $previousCallbacks.terminal | ConvertFrom-Json
@@ -578,6 +578,22 @@ try {
     if (!$registeredID -or $registered.Content -notmatch 'id="node-extract"') { throw 'Console trigger did not open the registered run' }
     $filtered = Invoke-WebRequest -Uri "$consoleOrigin/?state=queued&dag=console-dispatch" -WebSession $ops
     if ($filtered.Content -notmatch "/runs/$registeredID" -or $filtered.Content -match 'dispatch-rerun-demo') { throw 'Console run filtering returned an unexpected run' }
+    $exportPath = '/runs/report.json?dag=console-dispatch&state=queued&from=2025-11-01T01%3A00%3A00%2B08%3A00'
+    $runExport = Invoke-WebRequest -Uri "$consoleOrigin$exportPath" -WebSession $ops
+    $runList = $runExport.Content | ConvertFrom-Json
+    $foreignList = Invoke-RestMethod -Uri "$consoleOrigin$exportPath" -WebSession $readOnly
+    $olderList = Invoke-RestMethod -Uri "$consoleOrigin$exportPath&before=$registeredID" -WebSession $ops
+    $invalidFilters = Invoke-WebRequest -Uri "$consoleOrigin/runs/report.json?state=invalid" -WebSession $ops -SkipHttpErrorCheck
+    if ($filtered.Content -notmatch 'href="/runs/report.json\?dag=console-dispatch&amp;state=queued"' -or
+        $runExport.Headers['Content-Disposition'] -notmatch 'attachment; filename="run-list.json"' -or
+        $runList.format -ne 'workflow-runtime/run-list-v1' -or !$runList.generated_at -or !$runList.generated_by -or
+        $runList.workspace -ne 'demo' -or $runExport.Content -notmatch '"from": "2025-10-31T17:00:00Z"' -or
+        $runList.filter.dag -ne 'console-dispatch' -or $runList.filter.state -ne 'queued' -or
+        $runList.items.Count -ne 1 -or $runList.items[0].id -ne $registeredID -or
+        $foreignList.workspace -eq 'demo' -or $foreignList.items.Count -ne 0 -or $olderList.filter.before -ne $registeredID -or
+        $olderList.items.Count -ne 0 -or $invalidFilters.StatusCode -ne 400) {
+        throw 'Run list report failed scope, filtering, attachment, or version checks'
+    }
     $canceled = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/runs/$registeredID/cancel" -WebSession $ops `
         -Body @{csrf = $csrf; key = 'console-stop'; grace = '0'; reason = 'test-stop'} -ContentType 'application/x-www-form-urlencoded'
     if ($canceled.Content -notmatch 'test-stop') { throw 'Console did not read back the cancellation' }
@@ -628,7 +644,8 @@ try {
     $selectionConflict = Invoke-WebRequest -Method Post -Uri "$consoleOrigin/backfills/$batchID/confirm" -WebSession $ops `
         -Body "csrf=$csrf&ordinals=2" -ContentType 'application/x-www-form-urlencoded' -SkipHttpErrorCheck
     $foreignBatch = Invoke-WebRequest -Uri "$consoleOrigin/backfills/$batchID" -WebSession $readOnly -SkipHttpErrorCheck
-    if ($selectionConflict.StatusCode -ne 409 -or $foreignBatch.StatusCode -ne 404) { throw 'Backfill selection or workspace boundary was bypassed' }
+    $foreignBatchReport = Invoke-WebRequest -Uri "$consoleOrigin/backfills/$batchID/report.json" -WebSession $readOnly -SkipHttpErrorCheck
+    if ($selectionConflict.StatusCode -ne 409 -or $foreignBatch.StatusCode -ne 404 -or $foreignBatchReport.StatusCode -ne 404) { throw 'Backfill selection or workspace boundary was bypassed' }
     $firstReceipt = & $binary backfill-get demo $batchID | ConvertFrom-Json
     Assert-NativeExit 'read the first backfill receipt'
     $ids = @($firstReceipt.items[0].run_id)
@@ -652,6 +669,15 @@ try {
         $batchIndex.Content -notmatch "href=`"/backfills/$batchID`"" -or $replayedBatch.Content -notmatch 'data-state="created"') {
         throw 'Console did not recover and replay the same three backfill receipts'
     }
+    $batchReport = Invoke-RestMethod -Uri "$consoleOrigin/backfills/$batchID/report.json" -WebSession $writer
+    if ($replayedBatch.Content -notmatch ('href="/backfills/' + $batchID + '/report.json"') -or
+        $batchReport.format -ne 'workflow-runtime/backfill-report-v1' -or !$batchReport.generated_at -or !$batchReport.generated_by -or
+        $batchReport.selection_digest -notmatch '^[0-9a-f]{64}$' -or $batchReport.batch.items.Count -ne 7 -or
+        $batchReport.batch.revision -ne 1 -or $batchReport.runs.Count -ne 3 -or
+        ((@($batchReport.runs | ForEach-Object run_id)) -join ',') -ne ($finalIDs -join ',')) {
+        throw 'Backfill report did not preserve the requested historical runs and selection'
+    }
+    Write-Output 'Console run-list and backfill exports preserve filters, scoped authorship, version, and persisted receipts.'
 
     $capacityHome = Invoke-WebRequest -Uri "$consoleOrigin/capacity?queue=reports" -WebSession $ops
     if ($capacityHome.Content -notmatch 'report-executors' -or $capacityHome.Content -notmatch 'action="/capacity/queue"') {

@@ -220,30 +220,38 @@ func (s *Store) GetBackfill(ctx context.Context, scope Scope, id int64) (Backfil
 		return BackfillBatch{}, err
 	}
 	defer tx.Rollback()
-	workspace, err := workspaceID(ctx, tx, scope.Workspace)
+	record, err := loadBackfill(ctx, tx, scope, id)
 	if err != nil {
 		return BackfillBatch{}, err
+	}
+	return record.BackfillBatch, tx.Commit()
+}
+
+func loadBackfill(ctx context.Context, tx *sql.Tx, scope Scope, id int64) (backfillRecord, error) {
+	workspace, err := workspaceID(ctx, tx, scope.Workspace)
+	if err != nil {
+		return backfillRecord{}, err
 	}
 	record, err := readBackfill(ctx, tx, workspace, id, false)
 	if err != nil {
-		return BackfillBatch{}, err
+		return backfillRecord{}, err
 	}
 	version, err := loadVersion(ctx, tx, record.dagID, record.Revision)
 	if err != nil {
-		return BackfillBatch{}, err
+		return backfillRecord{}, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT schedule_key FROM schedules WHERE workspace_id = ? AND dag_id = ? AND id = ?`,
 		workspace, record.dagID, record.ScheduleID).Scan(&record.Schedule); err != nil {
-		return BackfillBatch{}, err
+		return backfillRecord{}, err
 	}
 	record.Items, err = readBackfillItems(ctx, tx, record, version.Graph)
 	if err != nil {
-		return BackfillBatch{}, err
+		return backfillRecord{}, err
 	}
 	record.Workspace, record.DAG = scope.Workspace, version.Graph.Definition.Key
 	record.GraphDigest = version.Graph.Digest
 	record.DSTPolicy = "skip_nonexistent_preserve_repeated_instants"
-	return record.BackfillBatch, tx.Commit()
+	return record, nil
 }
 
 func readBackfill(ctx context.Context, tx *sql.Tx, workspace, id int64, lock bool) (backfillRecord, error) {

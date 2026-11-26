@@ -85,6 +85,20 @@ func (s server) backfill(w http.ResponseWriter, r *http.Request, auth session) {
 	s.render(w, http.StatusOK, data)
 }
 
+func (s server) exportBackfill(w http.ResponseWriter, r *http.Request, auth session) {
+	id, err := positiveID(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	report, err := s.db.ExportBackfill(r.Context(), auth.Scope, id)
+	if err != nil {
+		s.readError(w, r, err)
+		return
+	}
+	s.writeDownload(w, fmt.Sprintf("backfill-%d.json", id), report)
+}
+
 func (s server) backfillPage(w http.ResponseWriter, r *http.Request, auth session) (page, bool) {
 	id, err := positiveID(r.PathValue("id"))
 	if err != nil {

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/axin2024/workflow-runtime/internal/store"
 	"github.com/axin2024/workflow-runtime/internal/workflow"
@@ -19,24 +21,9 @@ var runStates = []string{"queued", "running", "succeeded", "failed", "action_req
 func (s server) runs(w http.ResponseWriter, r *http.Request, auth session) {
 	values := r.URL.Query()
 	data := page{Title: "运行记录", Section: "runs", Auth: auth, Filters: values, States: runStates}
-	filter := store.RunFilter{DAG: values.Get("dag"), State: values.Get("state")}
-	if filter.State != "" && !slices.Contains(runStates, filter.State) {
-		data.Problem = "运行状态筛选无效。"
-	}
-	var err error
-	if cursor := values.Get("before"); cursor != "" {
-		filter.Before, err = positiveID(cursor)
-	}
-	if err == nil {
-		filter.From, err = parseTimeInput(values.Get("from"))
-	}
-	if err == nil {
-		filter.Through, err = parseTimeInput(values.Get("through"))
-	}
+	filter, err := runFilter(values)
 	if err != nil {
 		data.Problem = err.Error()
-	}
-	if data.Problem != "" {
 		s.render(w, http.StatusBadRequest, data)
 		return
 	}
@@ -45,12 +32,92 @@ func (s server) runs(w http.ResponseWriter, r *http.Request, auth session) {
 		s.actionError(w, r, data, err)
 		return
 	}
-	if len(data.Runs) > store.ConsolePageSize {
-		data.Runs = data.Runs[:store.ConsolePageSize]
-		values.Set("before", strconv.FormatInt(data.Runs[len(data.Runs)-1].ID, 10))
-		data.Next = "/?" + values.Encode()
+	query := make(url.Values)
+	for _, field := range []string{"dag", "state", "from", "through", "before"} {
+		if value := values.Get(field); value != "" {
+			query.Set(field, value)
+		}
+	}
+	data.ExportURL = "/runs/report.json"
+	if len(query) > 0 {
+		data.ExportURL += "?" + query.Encode()
+	}
+	var next int64
+	data.Runs, next = runPageResults(data.Runs)
+	if next > 0 {
+		query.Set("before", strconv.FormatInt(next, 10))
+		data.Next = "/?" + query.Encode()
 	}
 	s.render(w, http.StatusOK, data)
+}
+
+func runFilter(values url.Values) (store.RunFilter, error) {
+	filter := store.RunFilter{DAG: values.Get("dag"), State: values.Get("state")}
+	if filter.State != "" && !slices.Contains(runStates, filter.State) {
+		return filter, errors.New("运行状态筛选无效。")
+	}
+	var err error
+	if cursor := values.Get("before"); cursor != "" {
+		filter.Before, err = positiveID(cursor)
+		if err != nil {
+			return filter, err
+		}
+	}
+	filter.From, err = parseTimeInput(values.Get("from"))
+	if err != nil {
+		return filter, err
+	}
+	filter.Through, err = parseTimeInput(values.Get("through"))
+	if err != nil {
+		return filter, err
+	}
+	if filter.From != nil && filter.Through != nil && filter.From.After(*filter.Through) {
+		return filter, errors.New("结束时间须晚于或等于开始时间。")
+	}
+	if filter.From != nil {
+		utc := filter.From.UTC()
+		filter.From = &utc
+	}
+	if filter.Through != nil {
+		utc := filter.Through.UTC()
+		filter.Through = &utc
+	}
+	return filter, nil
+}
+
+func runPageResults(items []store.RunSummary) ([]store.RunSummary, int64) {
+	if len(items) <= store.ConsolePageSize {
+		return items, 0
+	}
+	page := items[:store.ConsolePageSize]
+	return page, page[len(page)-1].ID
+}
+
+func (s server) exportRunList(w http.ResponseWriter, r *http.Request, auth session) {
+	filter, err := runFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	items, err := s.db.ListRuns(r.Context(), auth.Scope, filter)
+	if err != nil {
+		s.actionError(w, r, page{Title: "运行记录", Section: "runs", Auth: auth, Filters: r.URL.Query(), States: runStates}, err)
+		return
+	}
+	items, next := runPageResults(items)
+	report := struct {
+		Format      string             `json:"format"`
+		GeneratedAt time.Time          `json:"generated_at"`
+		GeneratedBy string             `json:"generated_by"`
+		Workspace   string             `json:"workspace"`
+		Filter      store.RunFilter    `json:"filter"`
+		Items       []store.RunSummary `json:"items"`
+		NextBefore  int64              `json:"next_before,omitempty"`
+	}{
+		Format: "workflow-runtime/run-list-v1", GeneratedAt: time.Now().UTC(), GeneratedBy: auth.Scope.Actor,
+		Workspace: auth.Scope.Workspace, Filter: filter, Items: items, NextBefore: next,
+	}
+	s.writeDownload(w, "run-list.json", report)
 }
 
 func (s server) run(w http.ResponseWriter, r *http.Request, auth session) {
@@ -113,12 +180,16 @@ func (s server) export(w http.ResponseWriter, r *http.Request, auth session) {
 		s.readError(w, r, err)
 		return
 	}
+	s.writeDownload(w, fmt.Sprintf("run-%d.json", id), report)
+}
+
+func (s server) writeDownload(w http.ResponseWriter, filename string, report any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="run-%d.json"`, id))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(report); err != nil {
-		s.logger.Printf("stream console report: %v", err)
+		s.logger.Printf("stream console report %s: %v", filename, err)
 	}
 }
 
