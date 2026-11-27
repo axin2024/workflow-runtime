@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/axin2024/workflow-runtime/internal/store"
@@ -32,6 +33,9 @@ func runDatabaseCommand(ctx context.Context, args []string, out io.Writer) error
 	}
 	if len(args) > 1 {
 		scope.Workspace = args[1]
+	}
+	if strings.HasPrefix(args[0], "process-") {
+		return runProcessCommand(ctx, args, dsn, scope, out)
 	}
 	switch args[0] {
 	case "callback-status":

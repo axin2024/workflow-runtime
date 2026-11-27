@@ -46,6 +46,7 @@ type page struct {
 	Selected        []int
 	Capacity        *capacityPage
 	Retention       *store.LogRetentionReport
+	Processes       *processPage
 }
 
 func (s server) workflows(w http.ResponseWriter, r *http.Request, auth session) {

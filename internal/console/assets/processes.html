@@ -1,0 +1,73 @@
+{{define "process-home"}}
+<header class="page-head"><h1>业务流程</h1><div class="actions">
+  {{if .Auth.CanOperate}}<a href="/process-migrations" class="button secondary">迁移预演</a>{{end}}
+  {{if .Auth.CanAuthor}}<a href="/process-designer" class="button primary">创建流程</a>{{end}}
+</div></header>
+<section class="panel"><div class="panel-head"><h2>已发布定义</h2></div>
+  {{if .Processes.Definitions}}<div class="table-wrap"><table><thead><tr><th>流程键</th><th>当前版本</th></tr></thead><tbody>
+    {{range .Processes.Definitions}}<tr><td><a href="/processes/{{.Key}}">{{.Key}}</a></td><td>v{{.Revision}}</td></tr>{{end}}
+  </tbody></table></div>{{else}}<p class="padded">当前工作空间还没有流程定义。</p>{{end}}
+</section>
+{{template "pager" .}}
+{{template "process-runs" .}}
+{{end}}
+
+{{define "process-runs"}}
+<section class="panel"><div class="panel-head"><h2>业务实例</h2></div>
+{{if .Processes.Runs}}<div class="table-wrap"><table>
+  <thead><tr><th>业务键</th><th>定义</th><th>当前节点</th><th>状态</th><th>更新时间</th></tr></thead>
+  <tbody>{{range .Processes.Runs}}<tr><td><a href="/process-instances/{{.ID}}">{{.Business}}</a><small class="subcell">#{{.ID}}</small></td>
+    <td>{{.Key}} · v{{.Revision}}</td><td class="mono">{{.Step}}</td><td><span class="status {{.Status}}">{{.Status}}</span></td><td>{{date .UpdatedAt}}</td></tr>{{end}}</tbody>
+</table></div>{{else}}<p class="padded">暂时没有实例。</p>{{end}}</section>
+{{end}}
+
+{{define "process-version"}}
+{{$version := .Processes.Version}}
+<a class="back" href="/processes">← 业务流程</a>
+<header class="page-head"><div><h1>{{$version.Key}}</h1><p>版本 {{$version.Revision}} · {{$version.Author}} · {{date $version.PublishedAt}}</p></div>
+  {{if .Auth.CanAuthor}}<a class="button secondary" href="/process-designer?from={{$version.Key}}">编辑新版本</a>{{end}}
+</header>
+{{template "process-preview" .}}
+{{if .Auth.CanOperate}}<section class="panel padded"><h2>启动实例</h2>
+  <form method="post" action="/processes/{{$version.Key}}/start" class="form-stack">
+    <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+    <input type="hidden" name="revision" value="{{$version.Revision}}">
+    <div class="fields"><label>业务键<input name="business" required maxlength="128" placeholder="PO-7"></label>
+    <label>实例输入 JSON<textarea name="input" rows="3">{}</textarea></label></div>
+    <div class="actions"><button class="primary">启动实例</button></div>
+  </form></section>{{end}}
+{{template "process-runs" .}}
+{{template "pager" .}}
+{{end}}
+
+{{define "process-editor"}}
+<a class="back" href="/processes">← 业务流程</a>
+<header class="page-head"><h1>流程设计器</h1></header>
+<section class="panel padded">
+  <form method="post" action="/process-designer" class="form-stack" data-process-editor>
+    <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+    <div class="fields"><label>流程键<input name="key" value="{{.Processes.Key}}" required pattern="[a-z][a-z0-9_\-]{0,63}"></label>
+    <label>基线版本<input name="expected" type="number" min="0" value="{{.Processes.Expected}}" required></label>
+    <label>导入 JSON 文件<input type="file" accept=".json,application/json" data-process-import></label></div>
+    <label>流程定义 JSON<textarea name="definition" rows="15" spellcheck="false" required>{{.Processes.Source}}</textarea></label>
+    <span class="subtle" data-process-message role="status" hidden></span>
+    <div class="actions"><button class="secondary" name="intent" value="preview">检查并预览</button>
+      <button class="primary" name="intent" value="publish">发布版本</button></div>
+  </form>
+</section>
+{{if .Processes.Diagnostics}}<section class="panel padded" aria-label="发布诊断"><h2>发布诊断</h2><ul>
+  {{range .Processes.Diagnostics}}<li><code>{{.Path}}</code> · {{.Code}}</li>{{end}}
+</ul></section>{{end}}
+{{if .Processes.Preview}}{{template "process-preview" .}}{{end}}
+{{end}}
+
+{{define "process-preview"}}
+<section class="panel"><div class="panel-head"><h2>流程图</h2></div>{{template "graph" .}}</section>
+<section class="panel"><div class="panel-head"><h2>节点与出口</h2></div>
+  <div class="table-wrap"><table><thead><tr><th>节点</th><th>类型</th><th>继续</th><th>超时</th><th>失败或驳回</th><th>操作</th><th>补偿</th></tr></thead><tbody>
+  {{range .Processes.Version.Definition.Steps}}<tr><td class="mono">{{.Key}}</td><td>{{.Kind}}</td><td>{{.Next}}</td>
+    <td>{{.OnTimeout}}{{if .AfterSeconds}}<small class="subcell">{{.AfterSeconds}} 秒</small>{{end}}</td><td>{{.OnFailure}}</td>
+    <td>{{.Operation}}{{range .Children}}<span class="subcell">{{.Process}} v{{.Revision}}</span>{{end}}</td><td>{{.Compensation}}</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+{{end}}

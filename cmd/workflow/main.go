@@ -73,6 +73,18 @@ const usage = `Usage:
   workflow queue-quota-get WORKSPACE QUEUE
   workflow console-grant WORKSPACE ACTOR author|operator|viewer
   workflow console-revoke WORKSPACE ACTOR
+  workflow process-check WORKSPACE DEFINITION.json
+  workflow process-publish WORKSPACE KEY BASE_REVISION DEFINITION.json
+  workflow process-start WORKSPACE KEY REVISION BUSINESS_KEY INPUTS.json
+  workflow process-show WORKSPACE ID [BEFORE_EVENT]
+  workflow process-cancel WORKSPACE ID REQUEST_KEY
+  workflow process-duty-grant WORKSPACE ACTOR DUTY
+  workflow process-connector-grant WORKSPACE KEY ACTOR [OPERATION]
+  workflow process-connector-revoke WORKSPACE KEY ACTOR [OPERATION]
+  workflow process-migration-preview WORKSPACE REQUEST_KEY MANIFEST.json
+  workflow process-migration-apply WORKSPACE MIGRATION_ID
+  workflow process-intake WORKSPACE open|paused
+  workflow process-drain WORKSPACE [AFTER_RUN_ID]
   workflow console [--listen 127.0.0.1:8081] [--secure-cookie]
   workflow worker-api [--listen 127.0.0.1:8080]
   workflow worker [--once] [--endpoint URL] [--interval DURATION] [--lease-seconds N]`

@@ -1,0 +1,16 @@
+{
+  "start": "credit-review",
+  "operations": ["freeze-credit", "release-credit", "place-order", "withdraw-order"],
+  "steps": [
+    {"key": "credit-review", "kind": "approval", "role": "finance", "after_seconds": 3600, "next": "freeze", "on_failure": "declined", "on_timeout": "credit-timeout"},
+    {"key": "freeze", "kind": "action", "operation": "freeze-credit", "compensation": "release-credit", "next": "purchase-review", "on_failure": "declined"},
+    {"key": "purchase-review", "kind": "approval", "role": "purchasing", "after_seconds": 7200, "next": "place", "on_failure": "declined", "on_timeout": "purchase-timeout"},
+    {"key": "place", "kind": "action", "operation": "place-order", "compensation": "withdraw-order", "next": "delivery", "on_failure": "declined"},
+    {"key": "delivery", "kind": "signal", "signal_kind": "goods_received", "after_seconds": 259200, "next": "closed", "on_timeout": "delivery-timeout"},
+    {"key": "closed", "kind": "end", "result": "succeeded"},
+    {"key": "declined", "kind": "end", "result": "failed"},
+    {"key": "credit-timeout", "kind": "end", "result": "failed"},
+    {"key": "purchase-timeout", "kind": "end", "result": "failed"},
+    {"key": "delivery-timeout", "kind": "end", "result": "failed"}
+  ]
+}

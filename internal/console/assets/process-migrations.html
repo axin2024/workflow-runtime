@@ -1,0 +1,29 @@
+{{define "process-migration-editor"}}
+<a class="back" href="/processes">← 业务流程</a>
+<header class="page-head"><h1>迁移预演</h1></header>
+<section class="panel padded"><form method="post" action="/process-migrations" class="form-stack">
+  <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><input type="hidden" name="request" value="{{.RequestKey}}-migration">
+  <div class="fields"><label>流程键<input name="process" required maxlength="64"></label>
+  <label>原版本<input type="number" name="source_revision" min="1" required></label>
+  <label>目标版本<input type="number" name="target_revision" min="2" required></label></div>
+  <label>实例编号<textarea name="runs" rows="3" required placeholder="用逗号或换行分隔，每批最多 100 个实例"></textarea></label>
+  <label>等待点映射 JSON<textarea name="mapping" rows="4" required>{}</textarea></label>
+  <div class="actions"><button class="primary">预演迁移</button></div>
+</form></section>
+{{end}}
+
+{{define "process-migration"}}
+{{$batch := .Processes.Migration}}
+<a class="back" href="/process-migrations">← 迁移预演</a>
+<header class="page-head"><div><h1>迁移批次 #{{$batch.ID}}</h1><p>{{$batch.Process}} · v{{$batch.Source}} → v{{$batch.Target}}</p></div>
+{{if not $batch.ApplyAt}}<form method="post" action="/process-migrations/{{$batch.ID}}">
+  <input type="hidden" name="csrf" value="{{.Auth.CSRF}}"><button class="primary">执行本批迁移</button>
+</form>{{end}}</header>
+<dl class="panel run-summary"><div><dt>发起人</dt><dd>{{$batch.PreviewBy}}</dd></div><div><dt>选定实例</dt><dd>{{len $batch.Items}}</dd></div>
+  <div><dt>跳过实例</dt><dd>{{len $batch.Skipped}}</dd></div><div><dt>执行时间 UTC</dt><dd>{{optionalDate $batch.ApplyAt}}</dd></div></dl>
+<section class="panel"><div class="panel-head"><h2>迁移明细</h2></div><div class="table-wrap"><table>
+  <thead><tr><th>实例</th><th>原等待点</th><th>目标等待点</th><th>状态</th><th>跳过原因</th></tr></thead>
+  <tbody>{{range $batch.Items}}<tr><td><a href="/process-instances/{{.Run}}">#{{.Run}}</a></td><td>{{.OldStep}}{{with .OldWait}} · #{{.}}{{end}}</td>
+    <td>{{.NewStep}}{{with .NewWait}} · #{{.}}{{end}}</td><td>{{.State}}</td><td>{{.Reason}}</td></tr>{{end}}</tbody>
+</table></div></section>
+{{end}}

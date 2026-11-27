@@ -69,6 +69,7 @@ func openDB(dsn string, migration bool) (*sql.DB, error) {
 		return nil, errors.New("invalid MySQL DSN or missing database name")
 	}
 	config.ParseTime = true
+	config.ClientFoundRows = false
 	config.Loc = time.UTC
 	config.MultiStatements = migration
 	config.InterpolateParams = false

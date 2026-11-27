@@ -48,6 +48,9 @@ func Handler(backend Backend, logger *log.Logger) http.Handler {
 	mux.HandleFunc("POST "+prefix+"complete", operation(logger, backend.Complete))
 	mux.HandleFunc("POST "+prefix+"cancel-ack", operation(logger, backend.AcknowledgeCancel))
 	registerTriggers(mux, backend, logger)
+	if processBackend, ok := backend.(processConnectorBackend); ok {
+		registerProcessConnectors(mux, processBackend, logger)
+	}
 	return mux
 }
 

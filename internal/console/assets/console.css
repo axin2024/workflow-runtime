@@ -95,6 +95,8 @@ tbody tr:hover { background: #fbfbff; }
 .status.running, .status.ready { color: #3f35a3; background: #eeebff; }
 .status.failed, .status.expired { color: #9a2644; background: #fce8ef; }
 .status.action_required, .status.retry_wait, .status.canceling { color: #784000; background: #fff0d7; }
+.status.waiting, .status.claimed, .status.unknown, .status.reconcile, .status.cancelling { color: #784000; background: #fff0d7; }
+.dag .graph-node.waiting .node-card, .dag .graph-node.reconcile .node-card { fill: #fff6e7; stroke: #be8734; }
 .graph-scroll { min-height: 108px; padding: 8px 9px; background: radial-gradient(circle at 1px 1px,#d9daee 1px,transparent 1px) 8px 8px / 16px 16px, #fafafe; border-radius: 0 0 13px 13px; }
 .dag { display: block; }
 .dag .edge { fill: none; stroke: #8178cd; stroke-width: 1.6; }

@@ -1,8 +1,20 @@
-param([Parameter(Mandatory)][string]$MySQLBin, [string]$PreviousCLI, [switch]$CapacityLoad)
+param(
+    [Parameter(Mandatory)][string]$MySQLBin,
+    [string]$PreviousCLI,
+    [switch]$CapacityLoad,
+    [string]$ProcessBrowserModule,
+    [string]$Chrome,
+    [string]$ProcessEvidenceDirectory
+)
 
 $ErrorActionPreference = 'Stop'
 $MySQLBin = (Resolve-Path -LiteralPath $MySQLBin).Path
 if ($PreviousCLI) { $PreviousCLI = (Resolve-Path -LiteralPath $PreviousCLI).Path }
+if ($ProcessBrowserModule) { $ProcessBrowserModule = (Resolve-Path -LiteralPath $ProcessBrowserModule).Path }
+if ($Chrome) { $Chrome = (Resolve-Path -LiteralPath $Chrome).Path }
+if ($ProcessEvidenceDirectory) {
+    $ProcessEvidenceDirectory = (New-Item -ItemType Directory -Path $ProcessEvidenceDirectory -Force).FullName
+}
 $project = Split-Path $PSScriptRoot -Parent
 $fixtureParent = (New-Item -ItemType Directory -Path (Join-Path $project '.local') -Force).FullName
 $key = [guid]::NewGuid().ToString('N').Substring(0, 12)
@@ -42,7 +54,7 @@ function Get-ConsoleCsrf([string]$Html) {
 $port = Get-LoopbackPort
 
 $savedEnvironment = @{}
-foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'WORKFLOW_WORKER_TOKEN', 'WORKFLOW_CAPACITY_LOAD', 'MYSQL_PWD')) {
+foreach ($name in @('WORKFLOW_MYSQL_DSN', 'WORKFLOW_TEST_MYSQL_DSN', 'WORKFLOW_ACTOR', 'WORKFLOW_WORKER_TOKEN', 'WORKFLOW_CAPACITY_LOAD', 'WORKFLOW_SIGNAL_SAMPLE_CSV', 'MYSQL_PWD')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -338,6 +350,9 @@ try {
     $env:WORKFLOW_ACTOR = 'fixture-operator'
     $previousSchema = 0
     if ($CapacityLoad) { $env:WORKFLOW_CAPACITY_LOAD = '1' }
+    if ($CapacityLoad -and $ProcessEvidenceDirectory) {
+        $env:WORKFLOW_SIGNAL_SAMPLE_CSV = Join-Path $ProcessEvidenceDirectory 'signal-load.csv'
+    }
     if ($PreviousCLI) {
         $previousMigration = & $PreviousCLI migrate | ConvertFrom-Json
         Assert-NativeExit 'previous CLI migrate'
@@ -925,6 +940,49 @@ try {
         !$expectedOperation -or $expectedOperation -ne $recordedOperation) { throw 'Backfill run lost its frozen version or operation key' }
     Write-Output 'CLI selected three of seven historical occurrences on revision 1, resumed in a new process, and retried without new runs.'
 
+    $processEvidence = @()
+    if ($ProcessBrowserModule) {
+        $processOperator = & $binary console-grant demo purchasing-operator operator | ConvertFrom-Json
+        Assert-NativeExit 'create a process console operator'
+        $buyer = & $binary console-grant demo purchasing-buyer viewer | ConvertFrom-Json
+        Assert-NativeExit 'create purchasing buyer'
+        & $binary process-duty-grant demo purchasing-buyer purchasing | Out-Null
+        Assert-NativeExit 'assign purchasing duty'
+        $browserConfig = @{ origin = $consoleOrigin; binary = $binary; playwright = $ProcessBrowserModule; chrome = $Chrome;
+            operator = $processOperator.token; buyer = $buyer.token; viewer = $viewer.token } | ConvertTo-Json -Compress
+        $browserOutput = $browserConfig | node (Join-Path $project 'scripts/test-process-console.cjs')
+        Assert-NativeExit 'run isolated Chrome acceptance for process console'
+        $browserReceipt = $browserOutput | ConvertFrom-Json
+        if ($browserReceipt.records.Count -ne 3) { throw 'Missing browser race receipts' }
+        if ($ProcessEvidenceDirectory) {
+            $browserReceipt | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 -LiteralPath (Join-Path $ProcessEvidenceDirectory 'approval-timer-race.json')
+        }
+        Write-Output "Process browser acceptance $browserOutput"
+        foreach ($record in $browserReceipt.records) { $processEvidence += ,@('process-show', 'demo', $record.id) }
+    }
+
+    $processKey = 'purchase-drain'
+    & $binary process-publish demo $processKey 0 examples/purchasing-process.json | Out-Null
+    Assert-NativeExit 'publish purchasing process for recovery'
+    $openProcess = & $binary process-start demo $processKey 1 PO-7 examples/purchasing-inputs.json | ConvertFrom-Json
+    Assert-NativeExit 'register pending purchase'
+    & $binary process-intake demo paused | Out-Null
+    Assert-NativeExit 'pause new business process intake'
+    $rejectedProcess = & $binary process-start demo $processKey 1 PO-new examples/purchasing-inputs.json 2>&1
+    if ($LASTEXITCODE -eq 0 -or ($rejectedProcess -join ' ') -notmatch 'paused') { throw 'Paused intake accepted a new run' }
+    $pauseReplay = & $binary process-start demo $processKey 1 PO-7 examples/purchasing-inputs.json | ConvertFrom-Json
+    Assert-NativeExit 'replay existing process during pause'
+    $drain = & $binary process-drain demo | ConvertFrom-Json
+    Assert-NativeExit 'read waiting process drain report'
+    $pending = @($drain.pending_instances | Where-Object { $_.run_id -eq $openProcess.run_id })
+    if (!$drain.intake.paused -or $drain.ownership_conflicts -ne 0 -or !$drain.legacy_dag_runs -or
+        $pauseReplay.run_id -ne $openProcess.run_id -or $pending.Count -ne 1 -or !$pending[0].wait_id -or !$pending[0].task_id) {
+        throw 'Pending business process drain report did not match its wait and approval'
+    }
+    Write-Output "Process drain held run $($openProcess.run_id), wait $($pending[0].wait_id), task $($pending[0].task_id); legacy DAG rows=$($drain.legacy_dag_runs); ownership conflicts=0."
+    $processEvidence += ,@('process-show', 'demo', $openProcess.run_id)
+    $processEvidence += ,@('process-drain', 'demo')
+
     $recoveryReads = @(
         @('revision', 'demo', 'dispatch-report', '1'),
         @('revision', 'demo', 'dispatch-report', '2'),
@@ -936,7 +994,7 @@ try {
         @('queue-quota-get', 'demo', 'reports'),
         @('run-export', 'demo', $failedRun.run.id),
         @('run-export', 'demo', $rerun.run_id)
-    )
+    ) + $processEvidence
     $originalEvidence = foreach ($check in $recoveryReads) { Read-RecoveryEvidence $check }
     $sourceAccount = $clientArgs[0..3] + '--user=workflow_test'
     $env:MYSQL_PWD = $appPassword

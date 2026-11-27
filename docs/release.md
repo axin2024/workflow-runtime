@@ -13,7 +13,7 @@ GitHub 是缺陷和功能反馈入口，码云提供同一源码版本。每个�
 环境需要 Git、Go 1.26.0 和 PowerShell 7。打包脚本从指定 Git 提交导出源码，再编译两个目标，把文档、样例、许可证与构建清单放进包内。可以使用标签或完整提交号。
 
 ~~~powershell
-pwsh -File ./scripts/package-release.ps1 -Version v1.0.0 -Revision v1.0.0
+pwsh -File ./scripts/package-release.ps1 -Version v2.0.0 -Revision v2.0.0
 ~~~
 
-默认输出至 `.local/release-v1.0.0/`。发布时把同一份 ZIP 和 `SHA256SUMS` 上传到两个仓库。 [变更记录](../CHANGELOG.md) · [第三方声明](../THIRD_PARTY_NOTICES.md)
+默认输出至 `.local/release-v2.0.0/`。GitHub 发行页提供 ZIP 和 `SHA256SUMS`，码云可从同一标签取得源码。 [变更记录](../CHANGELOG.md) · [第三方声明](../THIRD_PARTY_NOTICES.md)

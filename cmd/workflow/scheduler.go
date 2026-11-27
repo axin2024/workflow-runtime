@@ -78,16 +78,31 @@ func runScheduler(ctx context.Context, args []string, dsn, actor string, out, di
 			sweep, sweepErr = db.SweepExecution(attempt, *limit)
 		}
 		result, scanErr := db.ScanDue(attempt, actor, now, *limit)
+		timers, timerErr := db.ProcessDueWaits(attempt, now, *limit)
+		children, childErr := db.ScanProcessChildren(attempt, *limit)
+		expiredActions, actionErr := db.ExpireProcessActionClaims(attempt, *limit)
+		compensations, compErr := db.ScanProcessCompensations(attempt, *limit)
+		var expiredSignals int64
+		var signalErr error
+		if now.IsZero() {
+			expiredSignals, signalErr = db.ExpireProcessSignals(attempt, 1000)
+		}
 		cancel()
-		err := errors.Join(sweepErr, scanErr)
+		err := errors.Join(sweepErr, scanErr, timerErr, childErr, actionErr, compErr, signalErr)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if (*once || len(result.Outcomes) > 0 || sweep.Expired > 0 || sweep.CancelTimedOut > 0) && !result.At.IsZero() {
+		activity := timers + children + expiredActions + compensations
+		if (*once || len(result.Outcomes) > 0 || sweep.Expired > 0 || sweep.CancelTimedOut > 0 || activity > 0 || expiredSignals > 0) && !result.At.IsZero() {
 			output := struct {
 				store.ScheduleScan
-				Execution store.SweepResult `json:"execution"`
-			}{result, sweep}
+				Execution       store.SweepResult `json:"execution"`
+				ProcessTimers   int               `json:"process_timers,omitempty"`
+				ProcessChildren int               `json:"process_children,omitempty"`
+				ExpiredActions  int               `json:"expired_process_actions,omitempty"`
+				Compensations   int               `json:"process_compensations,omitempty"`
+				ExpiredSignals  int64             `json:"expired_signals,omitempty"`
+			}{result, sweep, timers, children, expiredActions, compensations, expiredSignals}
 			if writeErr := encoder.Encode(output); writeErr != nil {
 				return writeErr
 			}

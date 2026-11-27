@@ -1,0 +1,204 @@
+{
+  "browser": "158.0.8127.36",
+  "a1": "two distinct timeout exits",
+  "a2_http": 422,
+  "scope_http": 404,
+  "records": [
+    {
+      "order": "approval-first",
+      "id": 102630,
+      "task": 315,
+      "approval_input": {
+        "action": "approve",
+        "note": "acceptance-approval-first",
+        "revision": 2,
+        "request": "console-eb4oryxpskncwikd6ryg3lfn4n-decision-315"
+      },
+      "timer_input": {
+        "deadline": "2026-11-27T06:32:44.478518Z",
+        "wait_id": 131401,
+        "request": "timer:131401"
+      },
+      "approval_http": 303,
+      "wait_winner": "console-eb4oryxpskncwikd6ryg3lfn4n-decision-315",
+      "result": "succeeded",
+      "step": "cleared",
+      "audit": [
+        {
+          "event_id": 11688,
+          "definition_rev": 1,
+          "actor": "scheduler",
+          "kind": "timer_late",
+          "request_key": "timer:131401",
+          "details": {
+            "wait_id": 131401,
+            "winning_outcome": "accepted"
+          },
+          "occurred_at": "2026-11-27T05:32:44.961212Z"
+        },
+        {
+          "event_id": 11658,
+          "definition_rev": 1,
+          "actor": "purchasing-buyer",
+          "kind": "task_approve",
+          "request_key": "console-eb4oryxpskncwikd6ryg3lfn4n-decision-315",
+          "details": {
+            "note": "acceptance-approval-first",
+            "task": {
+              "run_id": 102630,
+              "status": "approved",
+              "task_id": 315,
+              "wait_id": 131401,
+              "deadline": "2026-11-27T06:32:44.478518Z",
+              "step_key": "release",
+              "claim_rev": 3,
+              "duty_role": "purchasing",
+              "claim_until": "2026-11-27T05:47:44.651099Z",
+              "completed_at": "2026-11-27T05:32:44.710061Z",
+              "completed_by": "purchasing-buyer",
+              "assigned_actor": "purchasing-buyer"
+            }
+          },
+          "occurred_at": "2026-11-27T05:32:44.715741Z"
+        },
+        {
+          "event_id": 11656,
+          "definition_rev": 1,
+          "actor": "purchasing-buyer",
+          "kind": "wait_resolved",
+          "request_key": "console-eb4oryxpskncwikd6ryg3lfn4n-decision-315",
+          "details": {
+            "step": "release",
+            "state": "accepted",
+            "wait_id": 131401,
+            "successor": "cleared"
+          },
+          "occurred_at": "2026-11-27T05:32:44.713005Z"
+        }
+      ]
+    },
+    {
+      "order": "timer-first",
+      "id": 102631,
+      "task": 316,
+      "approval_input": {
+        "action": "approve",
+        "note": "acceptance-timer-first",
+        "revision": 2,
+        "request": "console-u4q4rwz3cqubec7fydjhl7zhvj-decision-316"
+      },
+      "timer_input": {
+        "deadline": "2026-11-27T06:32:45.271776Z",
+        "wait_id": 131403,
+        "request": "timer:131403"
+      },
+      "approval_http": 409,
+      "wait_winner": "timer:131403",
+      "result": "failed",
+      "step": "timed-out",
+      "audit": [
+        {
+          "event_id": 11696,
+          "definition_rev": 1,
+          "actor": "purchasing-buyer",
+          "kind": "task_input_rejected",
+          "request_key": "console-u4q4rwz3cqubec7fydjhl7zhvj-decision-316",
+          "details": {
+            "action": "approve",
+            "task_id": 316,
+            "observed_claim_rev": 3,
+            "submitted_claim_rev": 2
+          },
+          "occurred_at": "2026-11-27T05:32:45.545252Z"
+        },
+        {
+          "event_id": 11694,
+          "definition_rev": 1,
+          "actor": "scheduler",
+          "kind": "wait_resolved",
+          "request_key": "timer:131403",
+          "details": {
+            "step": "release",
+            "state": "timeout",
+            "wait_id": 131403,
+            "successor": "timed-out"
+          },
+          "occurred_at": "2026-11-27T05:32:45.524642Z"
+        }
+      ]
+    },
+    {
+      "order": "parallel",
+      "id": 102632,
+      "task": 317,
+      "approval_input": {
+        "action": "approve",
+        "note": "acceptance-parallel",
+        "revision": 2,
+        "request": "console-fvnnldypr7v6d2lemzf7bi4wq2-decision-317"
+      },
+      "timer_input": {
+        "deadline": "2026-11-27T06:32:45.866614Z",
+        "wait_id": 131404,
+        "request": "timer:131404"
+      },
+      "approval_http": 303,
+      "wait_winner": "console-fvnnldypr7v6d2lemzf7bi4wq2-decision-317",
+      "result": "succeeded",
+      "step": "cleared",
+      "audit": [
+        {
+          "event_id": 11703,
+          "definition_rev": 1,
+          "actor": "scheduler",
+          "kind": "timer_late",
+          "request_key": "timer:131404",
+          "details": {
+            "wait_id": 131404,
+            "winning_outcome": "accepted"
+          },
+          "occurred_at": "2026-11-27T05:32:46.090288Z"
+        },
+        {
+          "event_id": 11702,
+          "definition_rev": 1,
+          "actor": "purchasing-buyer",
+          "kind": "task_approve",
+          "request_key": "console-fvnnldypr7v6d2lemzf7bi4wq2-decision-317",
+          "details": {
+            "note": "acceptance-parallel",
+            "task": {
+              "run_id": 102632,
+              "status": "approved",
+              "task_id": 317,
+              "wait_id": 131404,
+              "deadline": "2026-11-27T06:32:45.866614Z",
+              "step_key": "release",
+              "claim_rev": 3,
+              "duty_role": "purchasing",
+              "claim_until": "2026-11-27T05:47:45.993196Z",
+              "completed_at": "2026-11-27T05:32:46.054431Z",
+              "completed_by": "purchasing-buyer",
+              "assigned_actor": "purchasing-buyer"
+            }
+          },
+          "occurred_at": "2026-11-27T05:32:46.059434Z"
+        },
+        {
+          "event_id": 11700,
+          "definition_rev": 1,
+          "actor": "purchasing-buyer",
+          "kind": "wait_resolved",
+          "request_key": "console-fvnnldypr7v6d2lemzf7bi4wq2-decision-317",
+          "details": {
+            "step": "release",
+            "state": "accepted",
+            "wait_id": 131404,
+            "successor": "cleared"
+          },
+          "occurred_at": "2026-11-27T05:32:46.056424Z"
+        }
+      ]
+    }
+  ]
+}

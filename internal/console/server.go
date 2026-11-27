@@ -49,6 +49,9 @@ func Handler(db *store.Store, logger *log.Logger, secureCookie bool) (http.Handl
 		"short":     shorten,
 		"timestamp": timestamp, "backfillState": backfillState, "quota": quotaLabel, "limitInput": limitInput,
 		"selected": slices.Contains[[]int, int],
+		"claimable": func(task store.ProcessTask) bool {
+			return task.Status == "pending" || (task.ClaimUntil != nil && !time.Now().Before(*task.ClaimUntil))
+		},
 	}).ParseFS(files, "assets/*.html")
 	if err != nil {
 		return nil, err
@@ -90,6 +93,7 @@ func Handler(db *store.Store, logger *log.Logger, secureCookie bool) (http.Handl
 	mux.HandleFunc("GET /retention/report.json", s.protect(s.retentionExport))
 	mux.HandleFunc("POST /retention/policy", s.protect(s.retentionPolicy))
 	mux.HandleFunc("POST /retention/cleanup", s.protect(s.retentionCleanup))
+	s.registerProcessPages(mux)
 	protected := http.NewCrossOriginProtection().Handler(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")

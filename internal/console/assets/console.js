@@ -1,3 +1,39 @@
+const processEditor = document.querySelector('[data-process-editor]')
+if (processEditor) {
+  processEditor.querySelector('[data-process-import]').addEventListener('change', async event => {
+    const file = event.target.files[0]
+    if (!file) return
+    const notice = processEditor.querySelector('[data-process-message]')
+    notice.hidden = false
+    if (file.size > 262144) {
+      notice.textContent = '流程定义不能超过 256 KiB。'
+      return
+    }
+    try {
+      processEditor.elements.definition.value = await file.text()
+      notice.textContent = '已导入，提交后检查定义。'
+    } catch {
+      notice.textContent = '无法读取流程定义。'
+    }
+  })
+}
+
+const processDeadlines = document.querySelectorAll('[data-process-countdown]')
+if (processDeadlines.length) {
+  function updateProcessDeadlines() {
+    const now = Date.now()
+    for (const deadline of processDeadlines) {
+      const remaining = Math.max(0, Math.ceil((Date.parse(deadline.dataset.processCountdown) - now) / 1000))
+      const hours = Math.floor(remaining / 3600)
+      const minutes = String(Math.floor((remaining % 3600) / 60)).padStart(2, '0')
+      const seconds = String(remaining % 60).padStart(2, '0')
+      deadline.textContent = remaining ? `剩余 ${hours}:${minutes}:${seconds}` : '截止时间已过'
+    }
+  }
+  updateProcessDeadlines()
+  window.setInterval(updateProcessDeadlines, 1000)
+}
+
 const editor = document.querySelector('[data-editor]')
 if (editor) {
   const source = editor.querySelector('[data-source]')

@@ -1,0 +1,96 @@
+{{define "process-instance"}}
+{{$detail := .Processes.Detail}}
+{{$run := $detail.Run}}
+<a class="back" href="/processes/{{$run.Key}}">← {{$run.Key}}</a>
+<header class="page-head"><div><h1>{{$run.Business}} <span class="status {{$run.Status}}" data-process-state>{{$run.Status}}</span></h1>
+  <p>实例 {{$run.ID}} · 版本 {{$run.Revision}} · 当前节点 <code>{{$run.Step}}</code></p></div>
+  <div class="actions"><a class="button secondary" href="/process-instances/{{$run.ID}}/report.json">实例 JSON</a>
+  {{if and .Auth.CanOperate (not $detail.Cancellation) (or (eq $run.Status "waiting" "running" "reconcile") (and (eq $run.Status "failed") $detail.Actions))}}
+  <form method="post" action="/process-instances/{{$run.ID}}/cancel">
+    <input type="hidden" name="csrf" value="{{.Auth.CSRF}}">
+    <input type="hidden" name="request" value="{{.RequestKey}}-cancel">
+    <button class="secondary">取消并执行补偿</button>
+  </form>{{end}}</div>
+</header>
+<section class="panel"><div class="panel-head"><h2>实例图</h2></div>{{template "graph" .}}</section>
+{{if $detail.Waits}}<section class="panel"><div class="panel-head"><h2>等待记录</h2></div><div class="table-wrap"><table>
+  <thead><tr><th>等待号</th><th>节点</th><th>版本</th><th>状态</th><th>截止时间 UTC</th><th>胜出请求</th></tr></thead>
+  <tbody>{{range $detail.Waits}}<tr><td>{{.ID}}</td><td class="mono">{{.Step}} <small>{{.SignalKind}}</small></td><td>v{{.Revision}}</td>
+    <td>{{.Status}}</td><td><time datetime="{{timestamp .Deadline}}">{{date .Deadline}}</time>{{if eq .Status "waiting"}}<span class="subcell" data-process-countdown="{{timestamp .Deadline}}"></span>{{end}}</td>
+    <td class="mono">{{deref .Winner}}</td></tr>{{end}}</tbody></table></div></section>{{end}}
+{{if $detail.Tasks}}<section class="panel"><div class="panel-head"><h2>审批记录</h2><a href="/process-tasks">我的待办</a></div><div class="table-wrap"><table>
+  <thead><tr><th>任务号</th><th>岗位</th><th>表单版本</th><th>状态</th><th>当前领取人</th><th>完成者</th></tr></thead>
+  <tbody>{{range $detail.Tasks}}<tr><td>{{.ID}}</td><td>{{.Duty}}</td><td>{{.Revision}}</td><td>{{.Status}}</td><td>{{deref .Assigned}}</td><td>{{deref .CompletedBy}}</td></tr>{{end}}</tbody>
+</table></div></section>{{end}}
+{{if $detail.Children}}<section class="panel"><div class="panel-head"><h2>子流程</h2></div><div class="table-wrap"><table>
+  <thead><tr><th>父节点</th><th>子实例</th><th>固定版本</th><th>子状态</th><th>汇合</th><th>补偿</th><th>撤销通知 UTC</th></tr></thead>
+  <tbody>{{range $detail.Children}}<tr><td>{{.Step}}</td><td><a href="/process-instances/{{.Run}}">#{{.Run}}</a></td><td>v{{.PinnedRevision}}</td>
+    <td>{{.Status}}</td><td>{{.JoinState}}</td><td>{{.ReversalStatus}}</td><td>{{if .ReverseDeliveredAt}}{{optionalDate .ReverseDeliveredAt}}{{else}}{{optionalDate .CancelDeliveredAt}}{{end}}</td></tr>{{end}}</tbody>
+</table></div></section>{{end}}
+{{if or $detail.Actions $detail.Cancellation}}
+<section class="panel"><div class="panel-head"><h2>外部操作与补偿</h2>{{with $detail.Cancellation}}<span class="status {{.Status}}">{{.Status}}</span>{{end}}</div>
+  {{range $detail.Actions}}
+  <div class="padded compact" data-action-id="{{.ID}}"><div class="split"><h3>{{.Operation}} <small>#{{.ID}} · {{.Direction}}</small></h3><span class="status {{.Status}}">{{.Status}}</span></div>
+    <p class="digest mono">{{.Key}}</p>
+    <dl class="inline-metadata"><div><dt>原操作回执</dt><dd>{{deref .OriginalReceipt}}</dd></div><div><dt>本操作回执</dt><dd>{{deref .ExternalReceipt}}</dd></div>
+      <div><dt>处置人</dt><dd>{{deref .ResolutionOwner}}</dd></div><div><dt>处置结果</dt><dd>{{deref .Resolution}}</dd></div></dl>
+    {{if and $.Auth.CanOperate (eq .Status "unknown") (eq (deref .ResolutionOwner) $.Auth.Actor)}}
+    <form method="post" action="/process-actions/{{.ID}}/resolve" class="form-stack">
+      <input type="hidden" name="csrf" value="{{$.Auth.CSRF}}"><input type="hidden" name="request" value="{{$.RequestKey}}-resolve-{{.ID}}">
+      <input type="hidden" name="operation_key" value="{{.Key}}">
+      <div class="fields"><label>核对结果<select name="decision"><option value="applied">已生效，登记回执</option>
+        <option value="not_applied">确认未生效</option><option value="stop">终止执行</option></select></label>
+        <label>外部回执<input name="receipt" maxlength="128"></label><label>查证依据<input name="reason" required maxlength="1024"></label></div>
+      <label>证据 JSON<textarea name="evidence" rows="2">{}</textarea></label>
+      <div class="actions"><button class="primary">登记处置</button></div>
+    </form>{{end}}
+  </div>{{end}}
+</section>{{end}}
+<section class="panel"><div class="panel-head"><h2>信号收件箱</h2></div>
+  <form method="get" action="/process-instances/{{$run.ID}}/signals" class="padded fields">
+    <label>原事件号<input name="event" required maxlength="128"></label><div><button class="secondary">查找信号回执</button></div>
+  </form>
+  {{if $detail.Signals}}<div class="table-wrap"><table><thead><tr><th>原事件号</th><th>回执号</th><th>状态</th><th>接收 UTC</th><th>匹配 UTC</th><th>消费 UTC</th></tr></thead>
+  <tbody>{{range $detail.Signals}}<tr><td><a href="/process-instances/{{$run.ID}}/signals?event={{.Event}}">{{.Event}}</a></td><td>{{.ID}}</td>
+    <td>{{.Outcome}}</td><td>{{date .ReceivedAt}}</td><td>{{optionalDate .MatchedAt}}</td><td>{{optionalDate .ConsumedAt}}</td></tr>{{end}}</tbody></table></div>{{end}}
+</section>
+<section id="timeline" class="panel"><div class="panel-head"><h2>事件时间线</h2></div><div class="table-wrap"><table>
+  <thead><tr><th>时间 UTC</th><th>版本</th><th>事件</th><th>操作者</th><th>请求号</th><th>记录</th></tr></thead>
+  <tbody>{{range $detail.Events}}<tr><td>{{date .At}}</td><td>v{{.Revision}}</td><td class="mono">{{.Kind}}</td><td>{{.Actor}}</td><td class="mono">{{deref .Request}}</td>
+    <td><details><summary>详情</summary><pre>{{json .Details}}</pre></details></td></tr>{{end}}</tbody></table></div>
+</section>
+{{template "pager" .}}
+{{end}}
+
+{{define "process-tasks"}}
+<header class="page-head"><h1>人工待办</h1></header>
+{{range .Processes.TaskQueue}}
+<section class="panel padded" data-task-id="{{.ID}}">
+  <div class="split"><h2><a href="/process-instances/{{.Run}}">{{.Step}}</a> <small>#{{.ID}}</small></h2><span class="status {{.Status}}">{{.Status}}</span></div>
+  <dl class="inline-metadata"><div><dt>岗位</dt><dd>{{.Duty}}</dd></div><div><dt>表单版本</dt><dd>{{.Revision}}</dd></div>
+    <div><dt>领取人</dt><dd>{{deref .Assigned}}</dd></div><div><dt>领取有效期 UTC</dt><dd>{{optionalDate .ClaimUntil}}</dd></div>
+    <div><dt>办理期限 UTC</dt><dd><time datetime="{{timestamp .Deadline}}">{{date .Deadline}}</time></dd></div></dl>
+  {{if claimable .}}
+  <form method="post" action="/process-tasks/{{.ID}}" class="form-stack">
+    <input type="hidden" name="csrf" value="{{$.Auth.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}">
+    <input type="hidden" name="request" value="{{$.RequestKey}}-claim-{{.ID}}">
+    <div class="fields"><label>领取时长（秒）<input name="seconds" type="number" min="1" max="31536000" value="900" required></label>
+    <div><button class="primary" name="action" value="claim">领取任务</button></div></div>
+  </form>
+  {{else if eq (deref .Assigned) $.Auth.Actor}}
+  <form method="post" action="/process-tasks/{{.ID}}" class="form-stack">
+    <input type="hidden" name="csrf" value="{{$.Auth.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}">
+    <input type="hidden" name="request" value="{{$.RequestKey}}-decision-{{.ID}}">
+    <label>决定备注<input name="note" maxlength="1024"></label>
+    <div class="actions"><button class="primary" name="action" value="approve">同意</button><button class="secondary" name="action" value="reject">驳回</button></div>
+  </form>
+  <form method="post" action="/process-tasks/{{.ID}}" class="form-stack compact">
+    <input type="hidden" name="csrf" value="{{$.Auth.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}">
+    <input type="hidden" name="request" value="{{$.RequestKey}}-delegate-{{.ID}}">
+    <div class="fields"><label>委派给<input name="assignee" required maxlength="64"></label>
+    <label>委派时长（秒）<input name="seconds" type="number" min="1" max="31536000" value="900" required></label>
+    <div><button class="secondary" name="action" value="delegate">委派任务</button></div></div>
+  </form>{{end}}
+</section>
+{{else}}<div class="panel empty"><p>当前没有可办理的任务。</p></div>{{end}}
+{{end}}
